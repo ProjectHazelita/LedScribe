@@ -11,15 +11,15 @@
 
 enum class DisplayMode : uint8_t
 {
-    up,        // 上移
-    down,      // 下移
-    left = 0,  // 左移
-    right,     // 右移
-    animation, // 动画
-    drop,      // 飘雪
-    curtain,   // 画卷
-    laser,     // 镭射
-    still,     // 固定
+    left = 0,      // 左移
+    right = 1,     // 右移
+    up = 2,        // 上移
+    down = 3,      // 下移
+    still = 4,     // 固定
+    animation = 5, // 动画
+    drop = 6,      // 飘雪
+    curtain = 7,   // 画卷
+    laser = 8,     // 镭射
 };
 
 struct SlotSettings

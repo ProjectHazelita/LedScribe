@@ -79,6 +79,26 @@ auto test_header_and_payload() -> void
     require(payload.size() == 128, "9-pixel bitmap payload should be 128 bytes");
 }
 
+auto test_mode_encoding() -> void
+{
+    // Protocol mapping predates the CLI translation; declaration order must not change it.
+    constexpr std::array modes{
+        DisplayMode::left, DisplayMode::right, DisplayMode::up,
+        DisplayMode::down, DisplayMode::still, DisplayMode::animation,
+        DisplayMode::drop, DisplayMode::curtain, DisplayMode::laser};
+    const std::array<uint16_t, 1> lengths{1};
+    const ProtocolTimestamp timestamp{
+        .year = 2026, .month = 7, .day = 17, .hour = 19, .minute = 0, .second = 1};
+    for (std::size_t code = 0; code < modes.size(); ++code)
+    {
+        DisplaySettings settings;
+        settings.slots[0].speed = 8;
+        settings.slots[0].mode = modes[code];
+        const auto header = build_header(lengths, settings, timestamp);
+        require(header[8] == 0x70 + code, "named mode serialized with incorrect protocol code");
+    }
+}
+
 auto test_utf8_validation() -> void
 {
     const auto codepoints = utf8_codepoints("A洛🙂");
@@ -120,6 +140,7 @@ auto main() -> int
     {
         test_pack_image();
         test_header_and_payload();
+        test_mode_encoding();
         test_utf8_validation();
         test_vendor_font();
         std::cout << "all tests passed\n";

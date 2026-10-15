@@ -1,5 +1,5 @@
 {
-  description = "LEDyRochen C++ development shell";
+  description = "LedScribe C++ development shell";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";

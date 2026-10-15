@@ -35,7 +35,7 @@ struct Options
 
 auto print_help(std::ostream &output) -> void
 {
-    output << R"(Usage: ledyrochen [OPTIONS] MESSAGE [MESSAGE ...]
+    output << R"(Usage: ledscribe [OPTIONS] MESSAGE [MESSAGE ...]
 
 Write 1..8 cycling messages to a 0416:5020 CH546 11×44 LED display.
 
@@ -51,6 +51,10 @@ Options:
   --threshold N             Binarization threshold 0..255 (default: 96)
   --speed N[,N...]          Speed 1..8 per message, comma-separated (default: 4)
   --mode MODE[,MODE...]     Display mode per message, comma-separated (default: left)
+                           One speed/mode value applies to every message
+                           Multiple values configure slots in order (at most 8)
+                           Modes: left, right, up, down, still, animation,
+                                  drop, curtain, laser (or numeric 0..8)
   --brightness N            25, 50, 75 or 100 (default: 50)
   --blink SLOT[,SLOT...]    Enable blink for the given message slots (1..8 or all)
   --border SLOT[,SLOT...]   Enable border for the given message slots (1..8 or all)
@@ -94,15 +98,19 @@ auto parse_mode(std::string_view value) -> DisplayMode
             return named.mode;
         }
     }
-    const int numeric = parse_integer(value, "mode");
-    if (numeric < 0 || numeric > 8)
+    int numeric = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), numeric);
+    if (error != std::errc{} || end != value.data() + value.size() || numeric < 0 ||
+        numeric > 8)
     {
-        throw std::invalid_argument("mode must be a name or 0..8");
+        throw std::invalid_argument(
+            "mode must be left, right, up, down, still, animation, drop, curtain, laser or 0..8");
     }
     return static_cast<DisplayMode>(numeric);
 }
 
-auto split_values(std::string_view text) -> std::vector<std::string_view>
+auto split_values(std::string_view text, std::string_view name) -> std::vector<std::string_view>
 {
     std::vector<std::string_view> parts;
     std::size_t start = 0;
@@ -111,9 +119,17 @@ auto split_values(std::string_view text) -> std::vector<std::string_view>
         auto end = text.find(',', start);
         if (end == std::string_view::npos) end = text.size();
         auto part = text.substr(start, end - start);
-        auto first = part.find_first_not_of(' ');
-        auto last = part.find_last_not_of(' ');
-        if (first != std::string_view::npos) parts.push_back(part.substr(first, last - first + 1));
+        auto first = part.find_first_not_of(" \t");
+        auto last = part.find_last_not_of(" \t");
+        if (first == std::string_view::npos)
+        {
+            throw std::invalid_argument(std::string(name) + " list must not contain empty values");
+        }
+        parts.push_back(part.substr(first, last - first + 1));
+        if (parts.size() > MAX_MESSAGES)
+        {
+            throw std::invalid_argument(std::string(name) + " list must contain at most 8 values");
+        }
         start = end + 1;
     }
     return parts;
@@ -127,7 +143,7 @@ auto parse_slot_indices(std::string_view text) -> std::vector<std::size_t>
         for (std::size_t i = 0; i < MAX_MESSAGES; ++i) all[i] = i;
         return all;
     }
-    auto parts = split_values(text);
+    auto parts = split_values(text, "slot");
     std::vector<std::size_t> indices;
     for (auto part : parts)
     {
@@ -222,28 +238,39 @@ auto parse_options(int argc, char **argv) -> Options
             break;
         case font_size:
             result.font_size = parse_integer(optarg, "font-size");
+            if (result.font_size <= 5)
+                throw std::invalid_argument("font-size must be greater than 5");
             break;
         case threshold:
             result.threshold = parse_integer(optarg, "threshold");
+            if (result.threshold < 0 || result.threshold > 255)
+                throw std::invalid_argument("threshold must be between 0..255");
             break;
         case speed:
         {
-            auto parts = split_values(optarg);
+            auto parts = split_values(optarg, "speed");
             if (parts.size() == 1)
             {
                 int s = parse_integer(parts[0], "speed");
+                if (s < 1 || s > 8)
+                    throw std::invalid_argument("speed must be between 1..8");
                 for (auto &slot : result.display.slots) slot.speed = s;
             }
             else
             {
-                for (std::size_t i = 0; i < parts.size() && i < MAX_MESSAGES; ++i)
-                    result.display.slots[i].speed = parse_integer(parts[i], "speed");
+                for (std::size_t i = 0; i < parts.size(); ++i)
+                {
+                    int s = parse_integer(parts[i], "speed");
+                    if (s < 1 || s > 8)
+                        throw std::invalid_argument("speed must be between 1..8");
+                    result.display.slots[i].speed = s;
+                }
             }
             break;
         }
         case mode:
         {
-            auto parts = split_values(optarg);
+            auto parts = split_values(optarg, "mode");
             if (parts.size() == 1)
             {
                 DisplayMode m = parse_mode(parts[0]);
@@ -251,13 +278,16 @@ auto parse_options(int argc, char **argv) -> Options
             }
             else
             {
-                for (std::size_t i = 0; i < parts.size() && i < MAX_MESSAGES; ++i)
+                for (std::size_t i = 0; i < parts.size(); ++i)
                     result.display.slots[i].mode = parse_mode(parts[i]);
             }
             break;
         }
         case brightness:
             result.display.brightness = parse_integer(optarg, "brightness");
+            if (result.display.brightness != 25 && result.display.brightness != 50 &&
+                result.display.brightness != 75 && result.display.brightness != 100)
+                throw std::invalid_argument("brightness must be 25, 50, 75 or 100");
             break;
         case blink:
             for (auto idx : parse_slot_indices(optarg)) result.display.slots[idx].blink = true;
@@ -269,7 +299,8 @@ auto parse_options(int argc, char **argv) -> Options
             result.show_help = true;
             break;
         default:
-            throw std::invalid_argument("unknown option; use --help");
+            throw std::invalid_argument("invalid option or missing argument: " +
+                                        std::string(argv[optind - 1]) + "; use --help");
         }
     }
     for (int index = optind; index < argc; ++index)
@@ -372,6 +403,7 @@ auto run(const Options &options) -> int
         if (!outline_font)
         {
             outline_font = find_font(options.font);
+            std::cout << "using outline font: " << *outline_font << '\n';
         }
         images.push_back(
             render_text(message, outline_font->string(), options.font_size, options.threshold));

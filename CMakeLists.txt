@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.25)
 
 project(
-  LEDyRochen
+  LedScribe
   VERSION 0.1.0
   DESCRIPTION "CH546 11x44 display writer"
   LANGUAGES CXX
@@ -16,19 +16,11 @@ FetchContent_Declare(
 )
 FetchContent_MakeAvailable(stb)
 
-FetchContent_Declare(
-  cli11
-  URL https://github.com/CLIUtils/CLI11/releases/download/v2.6.2/CLI11.hpp
-  DOWNLOAD_NO_EXTRACT TRUE
-  DOWNLOAD_NAME CLI11.hpp
-)
-FetchContent_MakeAvailable(cli11)
-
 find_package(PkgConfig REQUIRED)
 pkg_check_modules(LIBUSB REQUIRED IMPORTED_TARGET libusb-1.0)
 
 add_library(
-  ledyrochen_core
+  ledscribe_core
   STATIC
   src/utils.cpp
   src/pack.cpp
@@ -37,18 +29,17 @@ add_library(
   src/vendor_font.cpp
   src/truetype.cpp
 )
-target_link_libraries(ledyrochen_core PUBLIC PkgConfig::LIBUSB)
-target_include_directories(ledyrochen_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
-target_include_directories(ledyrochen_core SYSTEM PRIVATE ${stb_SOURCE_DIR})
-target_compile_features(ledyrochen_core PUBLIC cxx_std_20)
-set_target_properties(ledyrochen_core PROPERTIES CXX_EXTENSIONS OFF)
+target_link_libraries(ledscribe_core PUBLIC PkgConfig::LIBUSB)
+target_include_directories(ledscribe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_include_directories(ledscribe_core SYSTEM PRIVATE ${stb_SOURCE_DIR})
+target_compile_features(ledscribe_core PUBLIC cxx_std_20)
+set_target_properties(ledscribe_core PROPERTIES CXX_EXTENSIONS OFF)
 
-add_executable(ledyrochen src/main.cpp)
-target_link_libraries(ledyrochen PRIVATE ledyrochen_core)
-target_include_directories(ledyrochen SYSTEM PRIVATE ${cli11_SOURCE_DIR})
-set_target_properties(ledyrochen PROPERTIES CXX_EXTENSIONS OFF)
+add_executable(ledscribe src/main.cpp)
+target_link_libraries(ledscribe PRIVATE ledscribe_core)
+set_target_properties(ledscribe PROPERTIES CXX_EXTENSIONS OFF)
 
-function(ledyrochen_enable_warnings target)
+function(ledscribe_enable_warnings target)
   target_compile_options(
     ${target}
     PRIVATE
@@ -78,33 +69,48 @@ function(ledyrochen_enable_warnings target)
   )
 endfunction()
 
-ledyrochen_enable_warnings(ledyrochen_core)
-ledyrochen_enable_warnings(ledyrochen)
+ledscribe_enable_warnings(ledscribe_core)
+ledscribe_enable_warnings(ledscribe)
 
 include(CTest)
 if(BUILD_TESTING)
-  add_executable(ledyrochen_tests tests/tests.cpp)
-  target_link_libraries(ledyrochen_tests PRIVATE ledyrochen_core)
-  set_target_properties(ledyrochen_tests PROPERTIES CXX_EXTENSIONS OFF)
-  ledyrochen_enable_warnings(ledyrochen_tests)
-  add_test(NAME ledyrochen_tests COMMAND ledyrochen_tests)
+  add_executable(ledscribe_tests tests/tests.cpp)
+  target_link_libraries(ledscribe_tests PRIVATE ledscribe_core)
+  set_target_properties(ledscribe_tests PROPERTIES CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe_tests)
+  add_test(NAME ledscribe_tests COMMAND ledscribe_tests)
+  add_executable(ledscribe_font_tests tests/font_tests.cpp)
+  target_link_libraries(ledscribe_font_tests PRIVATE ledscribe_core)
+  set_target_properties(ledscribe_font_tests PROPERTIES CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe_font_tests)
+  add_test(NAME ledscribe_font_tests COMMAND ledscribe_font_tests)
+  add_test(
+    NAME ledscribe_cli_tests
+    COMMAND
+      ${CMAKE_COMMAND} -DLEDSCRIBE=$<TARGET_FILE:ledscribe>
+      -DTEST_DIR=${CMAKE_CURRENT_BINARY_DIR}/cli-tests -P
+      ${CMAKE_CURRENT_SOURCE_DIR}/tests/cli.cmake
+  )
 endif()
 
-option(LEDYROCHEN_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
-if(LEDYROCHEN_WARNINGS_AS_ERRORS)
+option(LEDSCRIBE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
+if(LEDSCRIBE_WARNINGS_AS_ERRORS)
   target_compile_options(
-    ledyrochen_core PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
+    ledscribe_core PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
   )
   target_compile_options(
-    ledyrochen PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
+    ledscribe PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
   )
   if(BUILD_TESTING)
     target_compile_options(
-      ledyrochen_tests PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
+      ledscribe_tests PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
+    )
+    target_compile_options(
+      ledscribe_font_tests PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
     )
   endif()
 endif()
 
 include(GNUInstallDirs)
-install(TARGETS ledyrochen RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
-install(FILES udev/70-ledyrochen.rules DESTINATION lib/udev/rules.d)
+install(TARGETS ledscribe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+install(FILES udev/70-ledscribe.rules DESTINATION lib/udev/rules.d)
