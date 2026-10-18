@@ -1,6 +1,7 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 
 // ── display / protocol ──
@@ -58,4 +59,5 @@ constexpr unsigned char TRAIL_BITS = 0x3F; // 10xxxxxx → extract 6 data bits
 // ── USB ──
 constexpr uint16_t VID = 0x0416;
 constexpr uint16_t PID = 0x5020;
+constexpr std::chrono::milliseconds WRITE_DELAY = std::chrono::milliseconds{100};
 constexpr unsigned int TRANSFER_TIMEOUT = 3000;

@@ -241,8 +241,24 @@ git remote set-url origin git@github.com:ProjectHazelita/LedScribe.git
 
 </details>
 
+### USB 诊断
+
+需要排查设备发现或写入问题时，加上 `--verbose`：
+
+```console
+./build/ledscribe --verbose --list-devices
+./build/ledscribe --verbose "洛汐"
+```
+
+诊断日志仅写入 stderr，不改变正常 stdout 输出或退出状态；默认不输出诊断日志。
+日志包含 USB 总线与设备地址、十六进制 VID:PID、配置与接口/端点选择，
+以及每个报告包的 OUT/ACK 阶段、传输字节数和 libusb 状态。
+传输前会记录当前阶段，方便定位卡在发送还是等待 ACK；失败仍按原有错误处理退出。
+可用 `2>usb.log` 保存诊断与错误信息；分享前请检查其中的设备标识。
+`--dry-run` 不访问 USB，因此即使指定 `--verbose` 也不会产生 USB 诊断日志。
+
 ## 📄 许可说明
 
-项目代码采用 [MIT License](./LICENSE)，保留原作者版权声明。项目由 [ProjectHazelita](https://github.com/ProjectHazelita) 维护，最初由 Limity'roChen 和 LyCecilion 编写。
+项目代码采用 [MIT License](./LICENSE)，保留原作者版权声明。项目由 [ProjectHazelita](https://github.com/ProjectHazelita) 维护，最初由 LYCN 和 LyCecilion 编写。
 
 商家 `ASC11` / `HZK11` 字库来自安装包，**项目代码的许可证不自动覆盖字库**；未经授权，不应单独提交或再分发。轮廓字体也应遵守各自的许可证，并仅将受信任的本地 TTF/TTC 文件交给 stb_truetype 解析：它不为不可信字体提供安全解析保证。

@@ -1,7 +1,10 @@
 #include "device.hpp"
+#include "constants.hpp"
 
 #include <algorithm>
 #include <array>
+#include <iomanip>
+#include <ostream>
 #include <stdexcept>
 #include <string_view>
 #include <thread>
@@ -56,13 +59,27 @@ struct EndpointSelection
     int interface_number{-1};
 };
 
-auto find_endpoints(const libusb_config_descriptor &config) -> EndpointSelection
+auto find_endpoints(const libusb_config_descriptor &config, std::ostream *log = nullptr)
+    -> EndpointSelection
 {
+    if (log != nullptr)
+    {
+        *log << "    [endpoint] scanning config with " << static_cast<int>(config.bNumInterfaces)
+             << " interface(s)\n";
+    }
     for (uint8_t interface_index = 0; interface_index < config.bNumInterfaces; ++interface_index)
     {
+        if (log != nullptr)
+        {
+            *log << "        <scan> interface " << static_cast<int>(interface_index) << "\n";
+        }
         const libusb_interface &interface = config.interface[interface_index];
         for (int alternate_index = 0; alternate_index < interface.num_altsetting; ++alternate_index)
         {
+            if (log != nullptr)
+            {
+                *log << "            <scan> altsetting " << alternate_index << "\n";
+            }
             const libusb_interface_descriptor &alternate = interface.altsetting[alternate_index];
             EndpointSelection selection{.interface_number = alternate.bInterfaceNumber};
             for (uint8_t endpoint_index = 0; endpoint_index < alternate.bNumEndpoints;
@@ -85,6 +102,12 @@ auto find_endpoints(const libusb_config_descriptor &config) -> EndpointSelection
             }
             if (selection.endpoint_in != 0 && selection.endpoint_out != 0)
             {
+                if (log != nullptr)
+                {
+                    *log << "            [endpoint] selected OUT="
+                         << static_cast<int>(selection.endpoint_out)
+                         << " IN=" << static_cast<int>(selection.endpoint_in) << '\n';
+                }
                 return selection;
             }
         }
@@ -125,13 +148,17 @@ auto BadgeDevice::operator=(BadgeDevice &&other) noexcept -> BadgeDevice &
     return *this;
 }
 
-auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
+auto BadgeDevice::find_all(std::ostream *log) -> std::vector<BadgeDevice>
 {
     libusb_context *raw_context = nullptr;
     const int init_result = libusb_init(&raw_context);
     if (init_result < 0)
     {
         throw_usb_error("libusb init failed", init_result);
+    }
+    if (log != nullptr)
+    {
+        *log << "[find] libusb initialized\n";
     }
     auto context = std::shared_ptr<libusb_context>(raw_context, libusb_exit);
 
@@ -140,6 +167,10 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
     if (count < 0)
     {
         throw_usb_error("USB device enumeration failed", static_cast<int>(count));
+    }
+    if (log != nullptr)
+    {
+        *log << "[find] enumerated " << count << " USB device(s)\n";
     }
     DeviceList devices(raw_devices);
     std::vector<BadgeDevice> result;
@@ -153,9 +184,25 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
         {
             throw_usb_error("failed to read USB device descriptor", descriptor_result);
         }
+        if (log != nullptr)
+        {
+            const auto flags = log->flags();
+            const auto fill = log->fill();
+            *log << "[device " << index << "] bus="
+                 << static_cast<int>(libusb_get_bus_number(device))
+                 << " dev=" << static_cast<int>(libusb_get_device_address(device))
+                 << " VID:PID=" << std::hex << std::setfill('0') << std::setw(4)
+                 << descriptor.idVendor << ':' << std::setw(4) << descriptor.idProduct << '\n';
+            log->flags(flags);
+            log->fill(fill);
+        }
         if (descriptor.idVendor != VID || descriptor.idProduct != PID)
         {
             continue;
+        }
+        if (log != nullptr)
+        {
+            *log << "    [match] compatible CH546 display; opening device\n";
         }
 
         libusb_device_handle *handle = nullptr;
@@ -164,6 +211,10 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
         {
             throw_usb_error("failed to open 0416:5020 device (check udev rules)", open_result);
         }
+        if (log != nullptr)
+        {
+            *log << "    [open] device opened\n";
+        }
         std::unique_ptr<libusb_device_handle, decltype(&libusb_close)> handle_guard(handle,
                                                                                     libusb_close);
 
@@ -171,6 +222,10 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
         int config_result = libusb_get_active_config_descriptor(device, &raw_config);
         if (config_result == LIBUSB_ERROR_NOT_FOUND)
         {
+            if (log != nullptr)
+            {
+                *log << "    [config] no active config descriptor, falling back to index 0\n";
+            }
             config_result = libusb_get_config_descriptor(device, 0, &raw_config);
             if (config_result >= 0)
             {
@@ -181,6 +236,12 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
                     libusb_free_config_descriptor(raw_config);
                     throw_usb_error("failed to set USB configuration", set_result);
                 }
+                if (log != nullptr)
+                {
+                    *log << "    [config] configuration "
+                         << static_cast<int>(raw_config->bConfigurationValue) << ": "
+                         << libusb_error_name(set_result) << '\n';
+                }
             }
         }
         if (config_result < 0)
@@ -188,7 +249,7 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
             throw_usb_error("failed to read USB configuration", config_result);
         }
         ConfigDescriptor config(raw_config);
-        const EndpointSelection endpoints = find_endpoints(*config);
+        const EndpointSelection endpoints = find_endpoints(*config, log);
 
         const int detach_result = libusb_set_auto_detach_kernel_driver(handle, 1);
         if (detach_result < 0 && detach_result != LIBUSB_ERROR_NOT_SUPPORTED)
@@ -200,13 +261,31 @@ auto BadgeDevice::find_all() -> std::vector<BadgeDevice>
         {
             throw_usb_error("failed to claim USB interface", claim_result);
         }
+        if (log != nullptr)
+        {
+            *log << "    [claim] interface " << endpoints.interface_number << " claimed\n";
+        }
 
         std::string manufacturer = read_string(handle, descriptor.iManufacturer);
         std::string product = read_string(handle, descriptor.iProduct);
+        if (log != nullptr)
+        {
+            const auto bus = libusb_get_bus_number(device);
+            const auto address = libusb_get_device_address(device);
+            *log << "    [info] bus=" << static_cast<int>(bus)
+                 << " dev=" << static_cast<int>(address)
+                 << " out=" << static_cast<int>(endpoints.endpoint_out)
+                 << " in=" << static_cast<int>(endpoints.endpoint_in) << " manufacturer=\""
+                 << manufacturer << "\" product=\"" << product << "\"\n";
+        }
         result.push_back(BadgeDevice(
             context, handle_guard.release(), endpoints.endpoint_out, endpoints.endpoint_in,
             endpoints.interface_number, libusb_get_bus_number(device),
             libusb_get_device_address(device), std::move(manufacturer), std::move(product)));
+    }
+    if (log != nullptr)
+    {
+        *log << "[find] found " << result.size() << " compatible display(s)\n";
     }
     return result;
 }
@@ -225,7 +304,7 @@ auto BadgeDevice::description() const -> std::string
 }
 
 auto BadgeDevice::write(std::span<const uint8_t> payload, std::chrono::milliseconds delay,
-                        unsigned int timeout) -> void
+                        unsigned int timeout, std::ostream *log) -> void
 {
     if (handle_ == nullptr)
     {
@@ -244,14 +323,30 @@ auto BadgeDevice::write(std::span<const uint8_t> payload, std::chrono::milliseco
         throw std::invalid_argument("USB report interval cannot be negative");
     }
 
+    if (log != nullptr)
+    {
+        *log << "[write] " << payload.size() << " bytes, " << payload.size() / REPORT_SIZE
+             << " reports, interval=" << delay.count() << "ms, timeout=" << timeout << "ms\n";
+    }
+
     for (std::size_t offset = 0; offset < payload.size(); offset += REPORT_SIZE)
     {
         std::this_thread::sleep_for(delay);
         std::array<unsigned char, REPORT_SIZE> report{};
         std::ranges::copy(payload.subspan(offset, REPORT_SIZE), report.begin());
+        if (log != nullptr)
+        {
+            *log << "[write] packet " << ((offset / REPORT_SIZE) + 1) << "/"
+                 << (payload.size() / REPORT_SIZE) << ": sending OUT\n";
+        }
         int written = 0;
         const int write_result = libusb_interrupt_transfer(handle_, endpoint_out_, report.data(),
                                                            REPORT_SIZE, &written, timeout);
+        if (log != nullptr)
+        {
+            *log << "    OUT " << written << "/" << REPORT_SIZE
+                 << " bytes: " << libusb_error_name(write_result) << '\n';
+        }
         if (write_result < 0)
         {
             throw_usb_error("USB write failed", write_result);
@@ -261,11 +356,19 @@ auto BadgeDevice::write(std::span<const uint8_t> payload, std::chrono::milliseco
             throw std::runtime_error("USB wrote only " + std::to_string(written) + "/" +
                                      std::to_string(REPORT_SIZE) + " bytes");
         }
-
+        if (log != nullptr)
+        {
+            *log << "    waiting for CH546 ACK\n";
+        }
         std::array<unsigned char, REPORT_SIZE> acknowledgement{};
         int received = 0;
         const int read_result = libusb_interrupt_transfer(
             handle_, endpoint_in_, acknowledgement.data(), REPORT_SIZE, &received, timeout);
+        if (log != nullptr)
+        {
+            *log << "    ACK " << received << "/" << REPORT_SIZE
+                 << " bytes: " << libusb_error_name(read_result) << '\n';
+        }
         if (read_result < 0)
         {
             throw_usb_error("failed to read CH546 acknowledgement", read_result);

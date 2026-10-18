@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <cstdint>
+#include <iosfwd>
 #include <libusb.h>
 #include <memory>
 #include <span>
@@ -21,13 +22,12 @@ class BadgeDevice
     BadgeDevice(BadgeDevice &&other) noexcept;
     auto operator=(BadgeDevice &&other) noexcept -> BadgeDevice &;
 
-    static auto find_all() -> std::vector<BadgeDevice>;
+    static auto find_all(std::ostream *log = nullptr) -> std::vector<BadgeDevice>;
 
     [[nodiscard]] auto device_id() const -> std::string;
     [[nodiscard]] auto description() const -> std::string;
-    auto write(std::span<const uint8_t> payload,
-               std::chrono::milliseconds delay = std::chrono::milliseconds{100},
-               unsigned int timeout = TRANSFER_TIMEOUT) -> void;
+    auto write(std::span<const uint8_t> payload, std::chrono::milliseconds delay = WRITE_DELAY,
+               unsigned int timeout = TRANSFER_TIMEOUT, std::ostream *log = nullptr) -> void;
     auto close() noexcept -> void;
 
   private:
