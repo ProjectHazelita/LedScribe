@@ -282,7 +282,7 @@ auto parse_options(int argc, char **argv) -> Options
 
 auto list_devices(std::ostream *log = nullptr) -> int
 {
-    auto devices = BadgeDevice::find_all(log);
+    const auto devices = discover_devices(log);
     if (devices.empty())
     {
         std::cout << "No 0416:5020 devices found\n";
@@ -291,37 +291,14 @@ auto list_devices(std::ostream *log = nullptr) -> int
     for (const auto &device : devices)
     {
         std::cout << device.device_id() << "  " << device.description() << '\n';
+        if (!device.discovery_error.empty())
+        {
+            std::cout << "  unavailable: " << device.discovery_error << '\n';
+        }
     }
     return 0;
 }
 
-auto select_device(std::optional<std::string_view> selector,
-                   std::ostream *log = nullptr) -> BadgeDevice
-{
-    auto devices = BadgeDevice::find_all(log);
-    if (devices.empty())
-    {
-        throw std::runtime_error(
-            "0416:5020 CH546 display not found; check USB connection and udev rules");
-    }
-    if (!selector)
-    {
-        if (devices.size() != 1)
-        {
-            throw std::runtime_error(
-                "multiple compatible displays connected; use --device to specify");
-        }
-        return std::move(devices.front());
-    }
-    for (auto &device : devices)
-    {
-        if (device.device_id() == *selector)
-        {
-            return std::move(device);
-        }
-    }
-    throw std::runtime_error("device not found: " + std::string(*selector));
-}
 
 auto run(const Options &options) -> int
 {
@@ -374,7 +351,9 @@ auto run(const Options &options) -> int
 
     const auto selector = options.device ? std::optional<std::string_view>(*options.device)
                                          : std::optional<std::string_view>{};
-    auto device = select_device(selector, log);
+    const auto devices = discover_devices(log);
+    const auto selected = select_device(devices, selector);
+    auto device = BadgeDevice::open(selected, log);
     std::cout << "writing to: " << device.description() << '\n';
     device.write(payload, WRITE_DELAY, TRANSFER_TIMEOUT, log);
     std::cout << "write complete. The content should now be on screen; unplug USB to redisplay.\n";

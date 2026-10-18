@@ -97,6 +97,11 @@ if(BUILD_TESTING)
   set_target_properties(ledscribe_render_tests PROPERTIES CXX_EXTENSIONS OFF)
   ledscribe_enable_warnings(ledscribe_render_tests)
   add_test(NAME ledscribe_render_tests COMMAND ledscribe_render_tests)
+  add_executable(ledscribe_device_tests tests/device_tests.cpp)
+  target_link_libraries(ledscribe_device_tests PRIVATE ledscribe_core)
+  set_target_properties(ledscribe_device_tests PROPERTIES CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe_device_tests)
+  add_test(NAME ledscribe_device_tests COMMAND ledscribe_device_tests)
   add_test(
     NAME ledscribe_cli_tests
     COMMAND

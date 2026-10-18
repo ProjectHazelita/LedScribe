@@ -208,7 +208,7 @@ ctest --preset sanitizers
 - [`src/vendor_font.cpp`](./src/vendor_font.cpp)、[`src/truetype.cpp`](./src/truetype.cpp)：两种字体渲染路径。
 - [`src/render.cpp`](./src/render.cpp)：共享字体选择、整条消息回退与字体来源元信息，核心不依赖 Qt。
 - [`src/pack.cpp`](./src/pack.cpp)、[`src/protocol.cpp`](./src/protocol.cpp)：位图打包、模式名称与协议头；`measure_payload` 在分配封包前计算容量，动画每帧44列、存储48列，最终按64字节对齐。合法超容量布局仍可测量，但禁止构建传输数据。
-- [`src/device.cpp`](./src/device.cpp)：libusb 设备生命周期与逐报告 OUT/ACK 交互；当前返回包只校验传输结果与长度，不解析其内容。
+- [`src/device.cpp`](./src/device.cpp)：描述符发现与独立 RAII 写入会话。列出设备不打开或占用接口，也不证明有访问权限；写入前重新核对设备地址、端口和接口身份，重连后需刷新并重新选择。进度仅在每个报告完成 OUT 与完整 ACK 后增加；当前返回包只校验传输结果与长度，不解析内容，不自动重试。
 
 ## 🔧 旧名称迁移
 
