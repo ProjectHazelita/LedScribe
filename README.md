@@ -152,11 +152,23 @@ sudo udevadm control --reload-rules
 
 ## 💻 开发与测试
 
-### Qt Widgets 开发环境
+### Qt Widgets 编辑器（可选）
 
-Nix 开发环境已包含 Qt 6 Widgets 的开发文件与工具，以及 Wayland / X11 平台插件。它们为后续 GUI 开发准备，**当前项目仍只有 CLI 入口**，核心库没有引入 Qt 依赖。
+CLI 和核心库不依赖 Qt；默认构建不查找 Qt。启用原生中文编辑器：
 
-修改环境后重新进入开发 shell，即可检查 Qt 是否来自该环境：
+```bash
+nix develop
+cmake --preset gui -DLEDSCRIBE_WARNINGS_AS_ERRORS=ON
+cmake --build --preset gui
+./build/gui/ledscribe-gui
+ctest --preset gui
+```
+
+编辑器支持 1–8 条消息、内部拖动排序、逐条模式/速度/闪烁/边框、全局亮度与字体设置。无需设备即可编辑、预览和保存。空文字及未选字体允许保存为草稿，但会显示渲染错误；超容量项目保留预览并显示实际字节数。字体资源只存路径、不嵌入工程，加载相对路径时以工程目录为基准。
+
+“文件”菜单提供新建、打开、保存与另存为，工程格式为 `*.ledscribe.json`。打开失败不替换当前工程；保存取消或失败不清除未保存状态。预览为真实像素：动画每帧恰 44×11，末帧补暗，不显示存储用的 4 列 padding；其他模式显示完整条带。滚动、闪烁、边框和特效由设备执行，预览不猜测播放帧率。字体缺失或当前消息出错时清空旧图。
+
+Nix 开发环境包含 Qt 6 Widgets、Qt Test 与 Wayland / X11 平台插件。可检查 Qt 是否来自该环境：
 
 ```bash
 nix develop
@@ -168,7 +180,7 @@ qmake -query QT_VERSION
 
 开发 shell 设置了 Nix Qt 模块对应的 `QT_PLUGIN_PATH`，让本地编译、尚未经过 Nix 打包包装的程序也能找到平台插件；不要将它替换为系统 Qt 的插件目录。没有全局强制显示后端，调试时可用 `QT_QPA_PLATFORM=wayland` 或 `QT_QPA_PLATFORM=xcb` 显式选择。
 
-该环境已验证 Widgets 编译、自动 MOC、离屏与 X11 启动，以及 Wayland 窗口实际显示；未加入正式 GUI 目标或额外 IDE。
+GUI 的离线测试覆盖工程文件校验/原子保存、消息移动、像素分页和快照失效；独立 sanitizer 构建可使用 `gui-sanitizers` configure/build/test preset。原生窗口可分别通过 Wayland 和 X11 后端启动；离屏测试不代替实际窗口和硬件目视验收。
 
 ### 离线回归
 

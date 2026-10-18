@@ -81,6 +81,35 @@ ledscribe_enable_warnings(ledscribe_core)
 ledscribe_enable_warnings(ledscribe)
 
 include(CTest)
+option(LEDSCRIBE_BUILD_GUI "Build the Qt 6 Widgets GUI" OFF)
+if(LEDSCRIBE_BUILD_GUI)
+  find_package(Qt6 REQUIRED COMPONENTS Widgets)
+  add_library(ledscribe_gui_components STATIC
+    src/gui/project.cpp
+    src/gui/pixel_preview.cpp
+    src/gui/worker.cpp
+    src/gui/main_window.cpp
+  )
+  target_link_libraries(ledscribe_gui_components PUBLIC ledscribe_core Qt6::Widgets)
+  target_include_directories(ledscribe_gui_components PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src/gui)
+  target_compile_definitions(ledscribe_gui_components PUBLIC QT_NO_KEYWORDS)
+  set_target_properties(ledscribe_gui_components PROPERTIES AUTOMOC ON CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe_gui_components)
+  add_executable(ledscribe-gui src/gui/main.cpp)
+  target_link_libraries(ledscribe-gui PRIVATE ledscribe_gui_components)
+  set_target_properties(ledscribe-gui PROPERTIES CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe-gui)
+  if(BUILD_TESTING)
+    find_package(Qt6 REQUIRED COMPONENTS Test)
+    add_executable(ledscribe_gui_tests tests/gui_tests.cpp)
+    target_link_libraries(ledscribe_gui_tests PRIVATE ledscribe_gui_components Qt6::Test)
+    set_target_properties(ledscribe_gui_tests PROPERTIES AUTOMOC ON CXX_EXTENSIONS OFF)
+    ledscribe_enable_warnings(ledscribe_gui_tests)
+    add_test(NAME ledscribe_gui_tests COMMAND ledscribe_gui_tests)
+    set_tests_properties(ledscribe_gui_tests PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+  endif()
+endif()
+
 if(BUILD_TESTING)
   add_executable(ledscribe_tests tests/tests.cpp)
   target_link_libraries(ledscribe_tests PRIVATE ledscribe_core)
@@ -114,4 +143,7 @@ endif()
 
 include(GNUInstallDirs)
 install(TARGETS ledscribe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+if(LEDSCRIBE_BUILD_GUI)
+  install(TARGETS ledscribe-gui RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(FILES udev/70-ledscribe.rules DESTINATION lib/udev/rules.d)
