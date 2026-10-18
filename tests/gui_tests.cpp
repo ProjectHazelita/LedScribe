@@ -1,6 +1,7 @@
 #include <QAction>
 #include <QAbstractButton>
 #include <QApplication>
+#include <QComboBox>
 #include <QFile>
 #include <QFileDialog>
 #include <QDir>
@@ -9,6 +10,7 @@
 #include <QJsonObject>
 #include <QListView>
 #include <QMessageBox>
+#include <QPushButton>
 #include <QSignalSpy>
 #include <QTemporaryDir>
 #include <QTest>
@@ -87,10 +89,12 @@ auto bitmap(int width) -> std::shared_ptr<const GlyphBitmap>
     return image;
 }
 
-auto validResult(quint64 revision, int width = 8) -> RenderResultPtr
+auto validResult(quint64 revision, int width = 8, DisplayMode mode = DisplayMode::left)
+    -> RenderResultPtr
 {
     auto result = std::make_shared<RenderResult>();
     result->revision = revision;
+    result->settings.slots[0].mode = mode;
     result->images.push_back(*bitmap(width));
     result->fonts.emplace_back(RenderInfo{.source = FontSource::vendor,
                                          .font_path = {}, .fallback_reason = {}});
@@ -393,12 +397,109 @@ class GuiTests : public QObject
         QVERIFY(window.isModified());
     }
 
+    void deviceSelectionAndSnapshotReadiness()
+    {
+        MainWindow window;
+        MessageEntry message;
+        message.text = "A";
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        const auto current = window.revision();
+        window.acceptRendered(validResult(current));
+        QVERIFY(!window.canWrite()); // never pick an unscanned target
+        DeviceInfo first{.bus = 5, .address = 6, .endpoint_out = 2, .endpoint_in = 130,
+                         .interface_number = 0, .alternate_setting = 0,
+                         .configuration_value = 1, .port_path = {1}, .discovery_error = {}};
+        auto list = std::make_shared<std::vector<DeviceInfo>>();
+        list->push_back(first);
+        window.acceptDevices(list);
+        QVERIFY(window.canWrite());
+        message.text = "B";
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        QVERIFY(!window.canWrite());
+        window.acceptRendered(validResult(current));
+        QVERIFY(!window.canWrite());
+        const auto revision = window.revision();
+        auto failure = std::make_shared<RenderResult>();
+        failure->revision = revision;
+        failure->images.emplace_back(GlyphBitmap{.pixels = {}, .width = 0});
+        failure->fonts.emplace_back(std::nullopt);
+        failure->errors.append("invalid");
+        window.acceptRendered(failure);
+        QVERIFY(!window.canWrite());
+        window.acceptRendered(validResult(revision, 8000));
+        QVERIFY(!window.canWrite());
+        window.acceptRendered(validResult(revision));
+        QVERIFY(window.canWrite());
+        DeviceInfo second = first;
+        second.address = 7;
+        DeviceInfo third = first;
+        third.address = 8;
+        auto multiple = std::make_shared<std::vector<DeviceInfo>>();
+        multiple->push_back(second);
+        multiple->push_back(third);
+        window.acceptDevices(multiple);
+        QVERIFY(!window.canWrite()); // old address disappears; multiple targets need selection
+        bool selected = false;
+        for (auto *combo : window.findChildren<QComboBox *>())
+        {
+            const int index = combo->findText(QString::fromStdString(second.description()));
+            if (index >= 0) { combo->setCurrentIndex(index); selected = true; break; }
+        }
+        QVERIFY(selected);
+        QVERIFY(window.canWrite());
+        auto broken = std::make_shared<std::vector<DeviceInfo>>();
+        second.discovery_error = "unusable endpoints";
+        broken->push_back(second);
+        window.acceptDevices(broken);
+        QVERIFY(!window.canWrite());
+        window.acceptDevices(std::make_shared<const std::vector<DeviceInfo>>());
+        QVERIFY(!window.canWrite());
+        QCOMPARE(window.projectModel()->document().messages[0].text, QString("B"));
+        QCOMPARE(window.revision(), revision);
+    }
+
+    void repeatedWriteTriggerHasOneConfirmation()
+    {
+        MainWindow window;
+        MessageEntry message;
+        message.text = "A";
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        window.acceptRendered(validResult(window.revision()));
+        auto devices = std::make_shared<std::vector<DeviceInfo>>();
+        devices->push_back(DeviceInfo{.bus = 5, .address = 6,
+            .endpoint_out = 2, .endpoint_in = 130, .interface_number = 0,
+            .alternate_setting = 0, .configuration_value = 1,
+            .port_path = {1}, .discovery_error = {}});
+        window.acceptDevices(devices);
+        QVERIFY(window.canWrite());
+        QPushButton *writeButton = nullptr;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == QStringLiteral("写入设备")) writeButton = button;
+        QVERIFY(writeButton);
+        int confirmations = 0;
+        QTimer::singleShot(0, [&]
+        {
+            QTimer::singleShot(0, [&]
+            {
+                for (auto *widget : QApplication::topLevelWidgets())
+                    if (auto *box = qobject_cast<QMessageBox *>(widget))
+                        if (box->isVisible()) { ++confirmations; box->reject(); }
+            });
+            writeButton->click();
+        });
+        writeButton->click();
+        QCOMPARE(confirmations, 1);
+        QVERIFY(window.canWrite()); // cancelling never starts USB or invalidates the project
+        QCOMPARE(window.projectModel()->document().messages[0].text, QString("A"));
+    }
+
     void fileCancellationAndSaveFailureKeepDirty()
     {
         QApplication::setAttribute(Qt::AA_DontUseNativeDialogs);
         MainWindow window;
         MessageEntry entry;
         entry.text = "preserve";
+        entry.settings.mode = DisplayMode::animation;
         QVERIFY(window.projectModel()->setMessage(0, entry));
         const auto revision = window.revision();
         dismissMessage(QMessageBox::Cancel);
@@ -421,6 +522,19 @@ class GuiTests : public QObject
         QCOMPARE(load_project(path).messages[0].text, entry.text);
         const auto savedRevision = window.revision();
         const auto savedTitle = window.windowTitle();
+        window.acceptRendered(validResult(savedRevision, 176, DisplayMode::animation));
+        auto *preview = window.findChild<PixelPreview *>();
+        QVERIFY(preview);
+        QCOMPARE(preview->frameCount(), 4);
+        const auto firstFrame = preview->frameImage();
+        QPushButton *nextFrame = nullptr;
+        for (auto *button : window.findChildren<QPushButton *>())
+            if (button->text() == QStringLiteral("下一帧")) nextFrame = button;
+        QVERIFY(nextFrame && nextFrame->isEnabled());
+        nextFrame->click();
+        QVERIFY(preview->frameImage() != firstFrame);
+        QCOMPARE(window.revision(), savedRevision);
+        QVERIFY(!window.isModified());
         QTimer::singleShot(0, []
         {
             for (auto *widget : QApplication::topLevelWidgets())

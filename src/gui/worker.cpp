@@ -105,4 +105,59 @@ void EditorWorker::render(RenderRequestPtr request)
     }
     Q_EMIT rendered(RenderResultPtr(std::move(result)));
 }
+
+void EditorWorker::discover()
+{
+    try
+    {
+        auto devices = std::make_shared<const std::vector<DeviceInfo>>(discover_devices(nullptr));
+        Q_EMIT devicesDiscovered(std::move(devices));
+    }
+    catch (const std::exception &error)
+    {
+        Q_EMIT discoveryFailed(QString::fromUtf8(error.what()));
+    }
+}
+
+void EditorWorker::write(DeviceInfo device, RenderResultPtr result)
+{
+    try
+    {
+        if (!result || !result->global_error.isEmpty() || result->images.empty() ||
+            result->fonts.size() != result->images.size() ||
+            static_cast<std::size_t>(result->errors.size()) != result->images.size() ||
+            !result->layout || !result->layout->fits ||
+            std::any_of(result->fonts.cbegin(), result->fonts.cend(),
+                        [](const std::optional<RenderInfo> &font) { return !font; }) ||
+            std::any_of(result->errors.cbegin(), result->errors.cend(),
+                        [](const QString &error) { return !error.isEmpty(); }))
+        {
+            throw std::invalid_argument("当前预览未完成或无效，不能写入设备");
+        }
+        const auto layout = measure_payload(result->images, result->settings);
+        if (!layout.fits)
+        {
+            throw std::invalid_argument("消息超出设备容量，不能写入设备");
+        }
+        const auto payload = build_payload(result->images, result->settings);
+        const WriteProgressSink progress{
+            .context = this,
+            .notify = [](void *context, WriteProgress value) noexcept
+            {
+                auto *worker = static_cast<EditorWorker *>(context);
+                Q_EMIT worker->writeProgress(static_cast<quint64>(value.reports_completed),
+                                             static_cast<quint64>(value.reports_total));
+            }};
+        {
+            auto badge = BadgeDevice::open(device, nullptr);
+            badge.write(payload, WRITE_DELAY, TRANSFER_TIMEOUT, nullptr, progress);
+        }
+        Q_EMIT writeFinished(
+            QStringLiteral("传输完成。可在胸牌上选择轮换或单槽位查看。"));
+    }
+    catch (const std::exception &error)
+    {
+        Q_EMIT writeFailed(QString::fromUtf8(error.what()));
+    }
+}
 } // namespace ledscribe::gui

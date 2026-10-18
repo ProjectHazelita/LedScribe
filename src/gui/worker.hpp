@@ -46,9 +46,16 @@ class EditorWorker : public QObject
 
   public Q_SLOTS:
     void render(RenderRequestPtr request);
+    void discover();
+    void write(DeviceInfo device, RenderResultPtr result);
 
   Q_SIGNALS:
     void rendered(RenderResultPtr result);
+    void devicesDiscovered(DeviceListPtr devices);
+    void discoveryFailed(QString error);
+    void writeProgress(quint64 completed, quint64 total);
+    void writeFinished(QString message);
+    void writeFailed(QString error);
 };
 } // namespace ledscribe::gui
 

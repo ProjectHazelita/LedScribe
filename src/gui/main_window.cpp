@@ -16,13 +16,17 @@
 #include <QLineEdit>
 #include <QListView>
 #include <QMenuBar>
+#include <QMenu>
 #include <QKeySequence>
 #include <QMessageBox>
+#include <QProgressBar>
 #include <QPushButton>
 #include <QScrollArea>
+#include <QScopedValueRollback>
 #include <QSignalBlocker>
 #include <QSpinBox>
 #include <QSplitter>
+#include <QStandardItemModel>
 #include <QStatusBar>
 #include <QThread>
 #include <QTimer>
@@ -31,6 +35,8 @@
 #include <exception>
 #include <memory>
 #include <utility>
+#include <algorithm>
+#include <limits>
 
 namespace ledscribe::gui
 {
@@ -59,10 +65,18 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent)
     worker_ = new EditorWorker;
     worker_->moveToThread(thread_);
     connect(thread_, &QThread::finished, worker_, &QObject::deleteLater);
-    connect(worker_, &EditorWorker::rendered, this, [this](RenderResultPtr result) {
-        operation_ = Operation::Idle;
-        acceptRendered(std::move(result));
-    }, Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::rendered, this, &MainWindow::acceptRendered,
+            Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::devicesDiscovered, this, &MainWindow::acceptDevices,
+            Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::discoveryFailed, this, &MainWindow::acceptDiscoveryFailure,
+            Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::writeProgress, this, &MainWindow::acceptWriteProgress,
+            Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::writeFinished, this, &MainWindow::acceptWriteFinished,
+            Qt::QueuedConnection);
+    connect(worker_, &EditorWorker::writeFailed, this, &MainWindow::acceptWriteFailure,
+            Qt::QueuedConnection);
     thread_->start();
     syncDocumentControls();
     messages_->setCurrentIndex(model_->index(0, 0));
@@ -78,6 +92,7 @@ MainWindow::~MainWindow() { stopWorker(); }
 void MainWindow::buildUi()
 {
     auto *file = menuBar()->addMenu(tr("文件(&F)"));
+    file_menu_ = file;
     auto action = [this, file](const QString &name, QKeySequence::StandardKey shortcut,
                                auto handler) {
         auto *item = file->addAction(name);
@@ -93,7 +108,18 @@ void MainWindow::buildUi()
 
     auto *central = new QWidget(this);
     auto *outer = new QVBoxLayout(central);
+    auto *devices = new QHBoxLayout;
+    device_ = new QComboBox(central);
+    device_->setSizeAdjustPolicy(QComboBox::AdjustToMinimumContentsLengthWithIcon);
+    device_->setMinimumContentsLength(30);
+    device_->addItem(tr("未扫描设备"), -1);
+    refresh_ = new QPushButton(tr("刷新设备"), central);
+    devices->addWidget(plainLabel(tr("目标设备")));
+    devices->addWidget(device_, 1);
+    devices->addWidget(refresh_);
+    outer->addLayout(devices);
     auto *splitter = new QSplitter(central);
+    editor_ = splitter;
     auto *left = new QWidget(splitter);
     auto *left_layout = new QVBoxLayout(left);
     left_layout->addWidget(plainLabel(tr("消息槽位（拖动排序）")));
@@ -219,6 +245,15 @@ void MainWindow::buildUi()
     bottom->addWidget(brightness_);
     capacity_ = plainLabel(tr("消息未完成"));
     bottom->addWidget(capacity_, 1);
+    progress_ = new QProgressBar(central);
+    progress_->setRange(0, 1);
+    progress_->setValue(0);
+    progress_->setFormat(tr("%v / %m 报告"));
+    progress_->setVisible(false);
+    write_ = new QPushButton(tr("写入设备"), central);
+    write_->setEnabled(false);
+    bottom->addWidget(progress_);
+    bottom->addWidget(write_);
     outer->addLayout(bottom);
     status_ = plainLabel({});
     statusBar()->addWidget(status_, 1);
@@ -269,6 +304,11 @@ void MainWindow::connectUi()
         preview_->setFrame(value - 1);
         updateFrames();
     });
+    connect(refresh_, &QPushButton::clicked, this, &MainWindow::refreshDevices);
+    connect(write_, &QPushButton::clicked, this, &MainWindow::writeProject);
+    connect(device_, &QComboBox::currentIndexChanged, this, [this] {
+        updateOperationControls();
+    });
 }
 
 void MainWindow::syncDocumentControls()
@@ -283,8 +323,8 @@ void MainWindow::syncDocumentControls()
     threshold_->setValue(doc.threshold);
     brightness_->setCurrentIndex(brightness_->findData(doc.brightness));
     const bool explicit_font = doc.font_choice == FontChoice::OutlineFile;
-    font_file_->setEnabled(explicit_font);
-    font_browse_->setEnabled(explicit_font);
+    font_file_->setEnabled(explicit_font && operation_ != Operation::Writing);
+    font_browse_->setEnabled(explicit_font && operation_ != Operation::Writing);
 }
 
 void MainWindow::syncMessageControls()
@@ -346,6 +386,7 @@ void MainWindow::scheduleRender()
     updateFrames();
     pending_ = true;
     debounce_->start();
+    updateOperationControls();
 }
 
 void MainWindow::dispatchRender()
@@ -353,6 +394,7 @@ void MainWindow::dispatchRender()
     if (closing_ || !pending_ || operation_ != Operation::Idle) return;
     pending_ = false;
     operation_ = Operation::Rendering;
+    updateOperationControls();
     RenderRequestPtr request = std::make_shared<RenderRequest>(RenderRequest{revision_, model_->document()});
     QMetaObject::invokeMethod(worker_, [worker = worker_, request = std::move(request)] {
         worker->render(request);
@@ -362,6 +404,7 @@ void MainWindow::dispatchRender()
 void MainWindow::acceptRendered(RenderResultPtr result)
 {
     if (closing_) return;
+    if (operation_ == Operation::Rendering) operation_ = Operation::Idle;
     if (result && result->revision == revision_)
     {
         result_ = std::move(result);
@@ -374,6 +417,195 @@ void MainWindow::acceptRendered(RenderResultPtr result)
         else capacity_->setText(tr("消息未完成"));
         showSelectedPreview();
     }
+    updateOperationControls();
+    resumePendingRender();
+}
+
+auto MainWindow::selectedDevice() const -> const DeviceInfo *
+{
+    if (!devices_ || device_->currentIndex() < 0) return nullptr;
+    const int index = device_->currentData().toInt();
+    if (index < 0 || static_cast<std::size_t>(index) >= devices_->size()) return nullptr;
+    const auto &device = (*devices_)[static_cast<std::size_t>(index)];
+    return device.discovery_error.empty() ? &device : nullptr;
+}
+
+auto MainWindow::canWrite() const -> bool
+{
+    if (closing_ || operation_ != Operation::Idle || !selectedDevice() || !result_ ||
+        result_->revision != revision_ || !result_->global_error.isEmpty() ||
+        !result_->layout || !result_->layout->fits) return false;
+    const auto count = static_cast<std::size_t>(model_->rowCount());
+    if (result_->images.size() != count || result_->fonts.size() != count ||
+        static_cast<std::size_t>(result_->errors.size()) != count ||
+        result_->layout->slot_count != count) return false;
+    for (std::size_t index = 0; index < count; ++index)
+        if (model_->document().messages[static_cast<qsizetype>(index)].text.isEmpty() ||
+            result_->images[index].width <= 0 || !result_->fonts[index] ||
+            !result_->errors[static_cast<qsizetype>(index)].isEmpty()) return false;
+    return true;
+}
+
+void MainWindow::updateOperationControls()
+{
+    const bool writing = operation_ == Operation::Writing;
+    editor_->setEnabled(!writing);
+    brightness_->setEnabled(!writing);
+    file_menu_->setEnabled(!writing);
+    // Explicitly disable actions too: shortcuts must not bypass the frozen menu.
+    for (auto *action : file_menu_->actions()) action->setEnabled(!writing);
+    device_->setEnabled(!closing_ && !writing && operation_ != Operation::Discovering);
+    refresh_->setEnabled(!closing_ && operation_ == Operation::Idle);
+    write_->setEnabled(canWrite());
+}
+
+void MainWindow::invalidateDevices(const QString &placeholder)
+{
+    const QSignalBlocker blocker(device_);
+    devices_.reset();
+    device_->clear();
+    device_->addItem(placeholder, -1);
+}
+
+void MainWindow::refreshDevices()
+{
+    if (closing_ || operation_ != Operation::Idle) return;
+    const auto *selected = selectedDevice();
+    preserved_device_id_ = selected ? QString::fromStdString(selected->device_id()) : QString{};
+    operation_ = Operation::Discovering;
+    invalidateDevices(tr("正在扫描设备…"));
+    status_->setText(tr("正在读取设备描述符；尚未打开设备"));
+    updateOperationControls();
+    QMetaObject::invokeMethod(worker_, &EditorWorker::discover, Qt::QueuedConnection);
+}
+
+void MainWindow::acceptDevices(DeviceListPtr devices)
+{
+    if (closing_) return;
+    QString preferred_id = preserved_device_id_;
+    if (preferred_id.isEmpty())
+        if (const auto *selected = selectedDevice())
+            preferred_id = QString::fromStdString(selected->device_id());
+    if (operation_ == Operation::Discovering) operation_ = Operation::Idle;
+    devices_ = std::move(devices);
+    {
+        const QSignalBlocker blocker(device_);
+        device_->clear();
+        device_->addItem(tr("请选择设备"), -1);
+        int usable_count = 0;
+        int only_usable = -1;
+        int preserved = -1;
+        if (devices_)
+        {
+            for (std::size_t index = 0; index < devices_->size(); ++index)
+            {
+                const auto &info = (*devices_)[index];
+                QString description = QString::fromStdString(info.description());
+                if (!info.discovery_error.empty())
+                    description += tr(" — 不可用：%1").arg(QString::fromStdString(info.discovery_error));
+                device_->addItem(description, static_cast<int>(index));
+                const int row = device_->count() - 1;
+                device_->setItemData(row, description, Qt::ToolTipRole);
+                if (!info.discovery_error.empty())
+                {
+                    auto *items = qobject_cast<QStandardItemModel *>(device_->model());
+                    if (items && items->item(row)) items->item(row)->setEnabled(false);
+                    continue;
+                }
+                ++usable_count;
+                only_usable = row;
+                if (QString::fromStdString(info.device_id()) == preferred_id) preserved = row;
+            }
+        }
+        if (!devices_ || devices_->empty()) device_->setItemText(0, tr("未发现设备；连接后刷新"));
+        else if (usable_count == 0) device_->setItemText(0, tr("无可用设备；请查看描述符错误"));
+        device_->setCurrentIndex(preserved >= 0 ? preserved : (usable_count == 1 ? only_usable : 0));
+    }
+    preserved_device_id_.clear();
+    status_->setText(tr("扫描完成；设备列表不代表已确认访问权限"));
+    updateOperationControls();
+    resumePendingRender();
+}
+
+void MainWindow::acceptDiscoveryFailure(QString error)
+{
+    if (closing_) return;
+    if (operation_ == Operation::Discovering) operation_ = Operation::Idle;
+    preserved_device_id_.clear();
+    invalidateDevices(tr("扫描失败；请刷新设备"));
+    status_->setText(tr("发现设备失败：%1").arg(error));
+    updateOperationControls();
+    resumePendingRender();
+}
+
+void MainWindow::writeProject()
+{
+    if (confirming_write_ || !canWrite()) return;
+    const QScopedValueRollback confirming(confirming_write_, true);
+    const auto snapshot = result_;
+    const DeviceInfo target = *selectedDevice();
+    const auto target_id = target.device_id();
+    const quint64 revision = revision_;
+    QMessageBox box(QMessageBox::Warning, tr("确认写入设备"),
+        tr("设备 ID：%1\n消息数：%2\n传输字节：%3\n\n将覆盖该设备的内容，是否继续？")
+            .arg(QString::fromStdString(target_id))
+            .arg(static_cast<qulonglong>(snapshot->images.size()))
+            .arg(static_cast<qulonglong>(snapshot->layout->payload_bytes)),
+        QMessageBox::Ok | QMessageBox::Cancel, this);
+    box.setTextFormat(Qt::PlainText);
+    box.setDefaultButton(QMessageBox::Cancel);
+    box.setEscapeButton(QMessageBox::Cancel);
+    if (box.exec() != QMessageBox::Ok) return;
+    // The modal event loop can deliver revisions, selection changes, or worker results.
+    if (!canWrite() || revision_ != revision || result_ != snapshot ||
+        !selectedDevice() || selectedDevice()->device_id() != target_id)
+    {
+        status_->setText(tr("工程或设备选择已变化，请重新确认后写入"));
+        return;
+    }
+    operation_ = Operation::Writing;
+    progress_->setRange(0, 1);
+    progress_->setValue(0);
+    progress_->setVisible(false); // The first real core callback establishes the total.
+    status_->setText(tr("正在准备并写入设备；请勿拔线"));
+    updateOperationControls();
+    QMetaObject::invokeMethod(worker_, [worker = worker_, target, snapshot] {
+        worker->write(target, snapshot);
+    }, Qt::QueuedConnection);
+}
+
+void MainWindow::acceptWriteProgress(quint64 completed, quint64 total)
+{
+    if (closing_ || operation_ != Operation::Writing || total == 0) return;
+    // Actual badge payloads are small; clamp conversions without inventing progress.
+    const auto limit = static_cast<quint64>(std::numeric_limits<int>::max());
+    progress_->setRange(0, static_cast<int>(std::min(total, limit)));
+    progress_->setValue(static_cast<int>(std::min({completed, total, limit})));
+    progress_->setVisible(true);
+}
+
+void MainWindow::acceptWriteFinished(QString message)
+{
+    if (closing_) return;
+    if (operation_ == Operation::Writing) operation_ = Operation::Idle;
+    status_->setText(message);
+    updateOperationControls();
+    resumePendingRender();
+}
+
+void MainWindow::acceptWriteFailure(QString error)
+{
+    if (closing_) return;
+    if (operation_ == Operation::Writing) operation_ = Operation::Idle;
+    preserved_device_id_.clear();
+    invalidateDevices(tr("请刷新并重新选择设备"));
+    status_->setText(tr("写入失败：%1。设备可能已收到部分内容；未自动重试。请刷新并重新选择设备。").arg(error));
+    updateOperationControls();
+    resumePendingRender();
+}
+
+void MainWindow::resumePendingRender()
+{
     if (pending_ && !debounce_->isActive()) dispatchRender();
 }
 
@@ -450,6 +682,7 @@ auto MainWindow::confirmDiscard() -> bool
 
 auto MainWindow::save(bool save_as) -> bool
 {
+    if (operation_ == Operation::Writing) return false;
     QString target = path_;
     if (save_as || target.isEmpty())
     {
@@ -471,6 +704,7 @@ auto MainWindow::save(bool save_as) -> bool
 
 void MainWindow::newProject()
 {
+    if (operation_ == Operation::Writing) return;
     if (!confirmDiscard()) return;
     model_->replaceDocument(ProjectDocument{});
     path_.clear();
@@ -483,6 +717,7 @@ void MainWindow::newProject()
 
 void MainWindow::openProject()
 {
+    if (operation_ == Operation::Writing) return;
     const auto path = QFileDialog::getOpenFileName(this, tr("打开 LedScribe 工程"), path_, project_filter);
     if (path.isEmpty()) return;
     try
@@ -514,6 +749,12 @@ void MainWindow::stopWorker()
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
+    if (operation_ == Operation::Writing)
+    {
+        status_->setText(tr("正在写入，请完成后关闭"));
+        event->ignore();
+        return;
+    }
     if (!confirmDiscard()) { event->ignore(); return; }
     stopWorker();
     event->accept();

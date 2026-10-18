@@ -12,6 +12,8 @@ class QComboBox;
 class QLabel;
 class QLineEdit;
 class QListView;
+class QMenu;
+class QProgressBar;
 class QPushButton;
 class QSpinBox;
 class QThread;
@@ -31,15 +33,21 @@ public:
     auto revision() const noexcept -> quint64 { return revision_; }
     auto renderResult() const noexcept -> RenderResultPtr { return result_; }
     auto isModified() const noexcept -> bool { return modified_; }
+    auto canWrite() const -> bool;
 
 public Q_SLOTS:
     void acceptRendered(RenderResultPtr result);
+    void acceptDevices(DeviceListPtr devices);
+    void acceptDiscoveryFailure(QString error);
+    void acceptWriteFinished(QString message);
+    void acceptWriteFailure(QString error);
+    void acceptWriteProgress(quint64 completed, quint64 total);
 
 protected:
     void closeEvent(QCloseEvent *event) override;
 
 private:
-    enum class Operation { Idle, Rendering };
+    enum class Operation { Idle, Rendering, Discovering, Writing };
     void buildUi();
     void connectUi();
     void syncDocumentControls();
@@ -51,6 +59,12 @@ private:
     void dispatchRender();
     void showSelectedPreview();
     void updateFrames();
+    void updateOperationControls();
+    void refreshDevices();
+    void writeProject();
+    void resumePendingRender();
+    auto selectedDevice() const -> const DeviceInfo *;
+    void invalidateDevices(const QString &placeholder);
     void updateTitle();
     void showError(const QString &title, const QString &message);
     auto confirmDiscard() -> bool;
@@ -69,7 +83,16 @@ private:
     bool pending_{};
     bool modified_{};
     bool closing_{};
+    bool confirming_write_{};
     QString path_;
+    DeviceListPtr devices_;
+    QString preserved_device_id_;
+    QComboBox *device_{};
+    QPushButton *refresh_{};
+    QPushButton *write_{};
+    QProgressBar *progress_{};
+    QWidget *editor_{};
+    QMenu *file_menu_{};
 
     QListView *messages_{};
     QPushButton *add_{};
