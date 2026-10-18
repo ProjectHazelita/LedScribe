@@ -1,5 +1,5 @@
 {
-  description = "LEDyRochen C++ development shell";
+  description = "LedScribe C++ development shell";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -21,6 +21,12 @@
         let
           pkgs = import nixpkgs { inherit system; };
           llvm = pkgs.llvmPackages;
+          qt = pkgs.qt6;
+          qtModules = [
+            qt.qtbase
+            qt.qtwayland
+            pkgs.kdePackages.fcitx5-qt
+          ];
         in
         {
           default = pkgs.mkShell {
@@ -39,6 +45,10 @@
               pkgs.libusb1
               pkgs.pkg-config
             ];
+            nativeBuildInputs = [ qt.wrapQtAppsHook ];
+            buildInputs = qtModules;
+            # Locally built binaries are not wrapped by Nix's package fixup phase.
+            QT_PLUGIN_PATH = pkgs.lib.makeSearchPath qt.qtbase.qtPluginPrefix qtModules;
           };
         }
       );

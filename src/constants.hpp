@@ -6,6 +6,7 @@
 
 // ── display / protocol ──
 constexpr int ROWS = 11;            // display height in pixels
+constexpr int DISPLAY_WIDTH = 44;   // visible width of one animation frame
 constexpr int MAX_PAYLOAD = 8192;   // CH546 safe limit (bytes)
 constexpr int REPORT_SIZE = 64;     // HID report size (bytes)
 constexpr int COLUMN_WIDTH = 8;     // bits per packed column group

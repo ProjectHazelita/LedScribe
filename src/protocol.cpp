@@ -1,15 +1,37 @@
 #include "protocol.hpp"
 
 #include <algorithm>
+#include <charconv>
 #include <chrono>
 #include <ctime>
 #include <limits>
 #include <stdexcept>
+#include <string_view>
+#include <system_error>
 
 #include "pack.hpp"
 
 namespace
 {
+struct NamedDisplayMode
+{
+    std::string_view name;
+    DisplayMode mode;
+};
+
+// Declared order is the wire protocol mapping; do not reorder without changing hardware.
+constexpr std::array<NamedDisplayMode, 9> DISPLAY_MODES = {
+    NamedDisplayMode{.name = "left", .mode = DisplayMode::left},
+    NamedDisplayMode{.name = "right", .mode = DisplayMode::right},
+    NamedDisplayMode{.name = "up", .mode = DisplayMode::up},
+    NamedDisplayMode{.name = "down", .mode = DisplayMode::down},
+    NamedDisplayMode{.name = "still", .mode = DisplayMode::still},
+    NamedDisplayMode{.name = "animation", .mode = DisplayMode::animation},
+    NamedDisplayMode{.name = "drop", .mode = DisplayMode::drop},
+    NamedDisplayMode{.name = "curtain", .mode = DisplayMode::curtain},
+    NamedDisplayMode{.name = "laser", .mode = DisplayMode::laser},
+};
+
 auto validate_settings(const DisplaySettings &settings) -> void
 {
     for (std::size_t i = 0; i < settings.slots.size(); ++i)
@@ -68,6 +90,39 @@ auto current_timestamp() -> ProtocolTimestamp
             .second = local.tm_sec};
 }
 
+auto display_mode_name(DisplayMode mode) -> std::string_view
+{
+    for (const auto &named : DISPLAY_MODES)
+    {
+        if (named.mode == mode)
+        {
+            return named.name;
+        }
+    }
+    throw std::invalid_argument("invalid display mode");
+}
+
+auto parse_display_mode(std::string_view value) -> DisplayMode
+{
+    for (const auto &named : DISPLAY_MODES)
+    {
+        if (value == named.name)
+        {
+            return named.mode;
+        }
+    }
+    int numeric = 0;
+    const auto [end, error] =
+        std::from_chars(value.data(), value.data() + value.size(), numeric);
+    if (error != std::errc{} || end != value.data() + value.size() || numeric < 0 ||
+        numeric > 8)
+    {
+        throw std::invalid_argument(
+            "mode must be left, right, up, down, still, animation, drop, curtain, laser or 0..8");
+    }
+    return static_cast<DisplayMode>(numeric);
+}
+
 auto build_header(std::span<const uint16_t> lengths, const DisplaySettings &settings,
                   const ProtocolTimestamp &timestamp) -> std::array<uint8_t, REPORT_SIZE>
 {
@@ -118,45 +173,77 @@ auto build_header(std::span<const uint16_t> lengths, const DisplaySettings &sett
     return header;
 }
 
-auto build_payload(std::span<const GlyphBitmap> images, const DisplaySettings &settings,
-                   const ProtocolTimestamp &timestamp) -> std::vector<uint8_t>
+auto measure_payload(std::span<const GlyphBitmap> images, const DisplaySettings &settings)
+    -> PayloadLayout
 {
     if (images.empty() || images.size() > MAX_MESSAGES)
     {
         throw std::invalid_argument("must provide 1..8 messages");
     }
+    validate_settings(settings);
 
-    std::vector<std::vector<uint8_t>> packed_images;
-    std::vector<uint16_t> lengths;
-    packed_images.reserve(images.size());
-    lengths.reserve(images.size());
-    for (const auto &image : images)
+    PayloadLayout layout{};
+    layout.slot_count = images.size();
+    layout.raw_bytes = static_cast<std::size_t>(REPORT_SIZE);
+    for (std::size_t index = 0; index < images.size(); ++index)
     {
+        const auto &image = images[index];
         image.validate();
-        auto packed = pack_image(image.pixels, image.width);
-        const std::size_t columns = packed.size() / static_cast<std::size_t>(ROWS);
-        if (columns == 0 || columns > std::numeric_limits<uint16_t>::max())
+        const auto source_width = static_cast<std::size_t>(image.width);
+        const auto frame_width = settings.slots[index].mode == DisplayMode::animation
+                                     ? static_cast<std::size_t>(DISPLAY_WIDTH)
+                                     : source_width;
+        const auto frames = (source_width + frame_width - 1) / frame_width;
+        const auto frame_groups =
+            (frame_width + static_cast<std::size_t>(COLUMN_WIDTH) - 1) /
+            static_cast<std::size_t>(COLUMN_WIDTH);
+        const auto groups = frames * frame_groups;
+        if (groups == 0 || groups > std::numeric_limits<uint16_t>::max())
         {
             throw std::invalid_argument("message bitmap length exceeds protocol limit");
         }
-        lengths.push_back(static_cast<uint16_t>(columns));
-        packed_images.push_back(std::move(packed));
+        const auto bytes = groups * static_cast<std::size_t>(ROWS);
+        layout.slots[index] = {.frames = frames, .groups = groups, .bytes = bytes};
+        layout.raw_bytes += bytes;
     }
+    layout.payload_bytes =
+        ((layout.raw_bytes + REPORT_SIZE - 1) / REPORT_SIZE) * REPORT_SIZE;
+    layout.fits = layout.payload_bytes <= MAX_PAYLOAD;
+    return layout;
+}
 
-    const auto header = build_header(lengths, settings, timestamp);
-    std::vector<uint8_t> payload(header.begin(), header.end());
-    for (const auto &packed : packed_images)
+auto build_payload(std::span<const GlyphBitmap> images, const DisplaySettings &settings,
+                   const ProtocolTimestamp &timestamp) -> std::vector<uint8_t>
+{
+    const auto layout = measure_payload(images, settings);
+    if (!layout.fits)
     {
-        payload.insert(payload.end(), packed.begin(), packed.end());
-    }
-    const std::size_t padding = (REPORT_SIZE - (payload.size() % REPORT_SIZE)) % REPORT_SIZE;
-    payload.resize(payload.size() + padding, 0);
-    if (payload.size() > MAX_PAYLOAD)
-    {
-        throw std::invalid_argument("encoded payload is " + std::to_string(payload.size()) +
+        throw std::invalid_argument("encoded payload is " + std::to_string(layout.payload_bytes) +
                                     " bytes, exceeding device safety limit of " +
                                     std::to_string(MAX_PAYLOAD) + " bytes");
     }
+
+    std::vector<uint16_t> lengths;
+    lengths.reserve(layout.slot_count);
+    for (std::size_t index = 0; index < layout.slot_count; ++index)
+    {
+        lengths.push_back(static_cast<uint16_t>(layout.slots[index].groups));
+    }
+
+    const auto header = build_header(lengths, settings, timestamp);
+    std::vector<uint8_t> payload;
+    payload.reserve(layout.payload_bytes);
+    payload.insert(payload.end(), header.begin(), header.end());
+    for (std::size_t index = 0; index < images.size(); ++index)
+    {
+        const auto &image = images[index];
+        const int frame_width = settings.slots[index].mode == DisplayMode::animation
+                                    ? DISPLAY_WIDTH
+                                    : image.width;
+        auto packed = pack_image(image.pixels, image.width, frame_width);
+        payload.insert(payload.end(), packed.begin(), packed.end());
+    }
+    payload.resize(layout.payload_bytes, 0);
     return payload;
 }
 

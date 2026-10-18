@@ -13,6 +13,25 @@ auto require_font_size(std::string_view name, std::size_t actual, std::size_t ex
                                  std::to_string(actual) + ", expected " + std::to_string(expected));
     }
 }
+
+// Comma-separated names of the font files missing from directory ("" when both are present).
+auto missing_vendor_files(const std::filesystem::path &directory) -> std::string
+{
+    std::string missing;
+    for (const char *name : {"ASC11", "HZK11"})
+    {
+        if (std::filesystem::is_regular_file(directory / name))
+        {
+            continue;
+        }
+        if (!missing.empty())
+        {
+            missing += ", ";
+        }
+        missing += name;
+    }
+    return missing;
+}
 } // namespace
 
 auto load_vendor_font(const std::filesystem::path &directory) -> VendorFont
@@ -26,22 +45,21 @@ auto load_vendor_font(const std::filesystem::path &directory) -> VendorFont
 
 auto find_vendor_font_dir(const std::filesystem::path &explicit_directory) -> std::filesystem::path
 {
-    std::vector<std::filesystem::path> candidates;
     if (!explicit_directory.empty())
     {
-        candidates.push_back(explicit_directory);
-    }
-    candidates.push_back(std::filesystem::current_path() / "vendor");
-
-    for (const auto &directory : candidates)
-    {
-        if (std::filesystem::is_regular_file(directory / "ASC11") &&
-            std::filesystem::is_regular_file(directory / "HZK11"))
+        const auto missing = missing_vendor_files(explicit_directory);
+        if (!missing.empty())
         {
-            return directory;
+            throw std::runtime_error("vendor font directory " + explicit_directory.string() +
+                                     " is missing " + missing +
+                                     "; point --vendor-font-dir at a directory holding ASC11 and "
+                                     "HZK11, or omit it to auto-detect");
         }
+        return explicit_directory;
     }
-    return {};
+
+    const auto detected = std::filesystem::current_path() / "vendor";
+    return missing_vendor_files(detected).empty() ? detected : std::filesystem::path{};
 }
 
 auto render_vendor(const std::string &text, const VendorFont &font) -> GlyphBitmap

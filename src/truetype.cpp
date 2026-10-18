@@ -4,7 +4,9 @@
 #include "truetype.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <cstdio>
 #include <filesystem>
 #include <limits>
 #include <memory>
@@ -39,6 +41,28 @@ struct TextMetrics
 };
 
 auto as_stb_codepoint(char32_t codepoint) -> int { return static_cast<int>(codepoint); }
+
+// Renders a codepoint as "U+XXXX" (four digits minimum, more for non-BMP code points).
+auto format_codepoint(char32_t codepoint) -> std::string
+{
+    std::array<char, 11> buffer{}; // "U+10FFFF" plus terminator
+    std::snprintf(buffer.data(), buffer.size(), "U+%04X", static_cast<unsigned int>(codepoint));
+    return std::string(buffer.data());
+}
+
+auto require_glyphs(const stbtt_fontinfo &font, std::span<const char32_t> codepoints,
+                    const std::string &font_path) -> void
+{
+    for (const char32_t codepoint : codepoints)
+    {
+        if (stbtt_FindGlyphIndex(&font, as_stb_codepoint(codepoint)) == 0)
+        {
+            throw std::runtime_error("font " + font_path + " has no glyph for " +
+                                     format_codepoint(codepoint) +
+                                     "; use --font to specify a font that covers this text");
+        }
+    }
+}
 
 auto measure_text(const stbtt_fontinfo &font, std::span<const char32_t> codepoints, int size)
     -> TextMetrics
@@ -140,6 +164,8 @@ auto render_text(const std::string &text, const std::string &font_path, int font
     {
         throw std::runtime_error("failed to initialize font: " + font_path);
     }
+
+    require_glyphs(font, codepoints, font_path);
 
     std::optional<TextMetrics> metrics;
     for (int size = font_size; size > MIN_FONT_SIZE; --size)

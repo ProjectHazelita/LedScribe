@@ -1,4 +1,4 @@
-# LEDyRochen CH546 LED badge (Winbond/WCH 0416:5020)
+# LedScribe CH546 LED badge (Winbond/WCH 0416:5020)
 # Grant the active local desktop session access without opening every HID device.
 SUBSYSTEM=="usb", ATTR{idVendor}=="0416", ATTR{idProduct}=="5020", TAG+="uaccess"
 SUBSYSTEM=="hidraw", ATTRS{idVendor}=="0416", ATTRS{idProduct}=="5020", TAG+="uaccess"
