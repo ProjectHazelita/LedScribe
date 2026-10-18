@@ -182,7 +182,7 @@ ctest --preset gui
 
 已在真实胸牌上验证两帧／四帧动画与静止消息的 576 字节、9 报告传输及轮换播放；拔线实测在 2/9 报告后返回 `LIBUSB_ERROR_NO_DEVICE`，保留工程、禁用旧目标且未自动重试。原生 Wayland/X11 窗口、拖动排序、字体错误、另存为和重开由现场交互与截图确认。硬件表现依具体设备而异，不能用传输成功代替实际观察。
 
-Nix 开发环境包含 Qt 6 Widgets、Qt Test 与 Wayland / X11 平台插件。可检查 Qt 是否来自该环境：
+Nix 开发环境包含 Qt 6 Widgets、Qt Test、Wayland / X11 平台插件，以及与本套 Qt 匹配的 Fcitx5 输入上下文插件。可检查 Qt 是否来自该环境：
 
 ```bash
 nix develop
@@ -193,6 +193,8 @@ qmake -query QT_VERSION
 使用仓库 `.envrc` 自动加载环境时，可执行 `direnv reload`，让交互式 shell 重新加载依赖。已经运行的进程不会自动继承新的环境变量。
 
 开发 shell 设置了 Nix Qt 模块对应的 `QT_PLUGIN_PATH`，让本地编译、尚未经过 Nix 打包包装的程序也能找到平台插件；不要将它替换为系统 Qt 的插件目录。没有全局强制显示后端，调试时可用 `QT_QPA_PLATFORM=wayland` 或 `QT_QPA_PLATFORM=xcb` 显式选择。
+
+使用 Fcitx5 时沿用桌面提供的 `QT_IM_MODULE=fcitx`，shell 会把匹配的 Qt 插件加入查找路径，不强制其他用户切换输入法。若能输入英文却没有中文候选，请检查输入法服务与当前进程的插件环境；不要混入不同 Qt 版本的系统插件。修改环境后需重新进入 shell 并重启 GUI，已打开的窗口不会获得新插件。
 
 GUI 的离线测试覆盖工程文件校验/原子保存、消息移动、像素分页和快照失效；独立 sanitizer 构建可使用 `gui-sanitizers` configure/build/test preset。原生窗口可分别通过 Wayland 和 X11 后端启动；离屏测试不代替实际窗口和硬件目视验收。
 

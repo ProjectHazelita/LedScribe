@@ -25,6 +25,7 @@
           qtModules = [
             qt.qtbase
             qt.qtwayland
+            pkgs.kdePackages.fcitx5-qt
           ];
         in
         {
