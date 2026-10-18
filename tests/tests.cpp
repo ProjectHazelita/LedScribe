@@ -1,4 +1,5 @@
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <iostream>
@@ -41,16 +42,19 @@ auto test_pack_image() -> void
     std::vector<uint8_t> pixels(static_cast<std::size_t>(ROWS * 8), DARK);
     pixels[0] = BRIGHT;
     pixels.back() = BRIGHT;
-    const auto packed = pack_image(pixels, 8);
+    const auto packed = pack_image(pixels, 8, 8);
     require(packed.size() == ROWS, "8-pixel wide bitmap should encode to 11 bytes");
     require(packed.front() == 0x80, "top-left pixel should be the most significant bit");
     require(packed.back() == 0x01, "bottom-right pixel should be the least significant bit");
 
-    require_throws<std::invalid_argument>([]() -> void { pack_image({}, 0); },
+    require_throws<std::invalid_argument>([]() -> void { pack_image({}, 0, 8); },
                                           "width=0 should be rejected");
     require_throws<std::invalid_argument>([]() -> void
-                                          { pack_image(std::array<uint8_t, 23>{}, 2); },
+                                          { pack_image(std::array<uint8_t, 23>{}, 2, 2); },
                                           "excess pixel data should be rejected");
+    require_throws<std::invalid_argument>(
+        []() -> void { pack_image(std::array<uint8_t, static_cast<long>(ROWS) * 8>{}, 8, 0); },
+        "frame width=0 should be rejected");
 }
 
 auto test_header_and_payload() -> void
@@ -99,6 +103,90 @@ auto test_mode_encoding() -> void
     }
 }
 
+auto test_animation_frame_alignment() -> void
+{
+    const ProtocolTimestamp timestamp{
+        .year = 2026, .month = 7, .day = 17, .hour = 19, .minute = 0, .second = 1};
+    for (const int width : {1, 40, 44, 45, 88, 176})
+    {
+        const auto source_width = static_cast<std::size_t>(width);
+        GlyphBitmap image{
+            .pixels = std::vector<uint8_t>(source_width * static_cast<std::size_t>(ROWS), DARK),
+            .width = width};
+        for (std::size_t x = 0; x < source_width; ++x)
+        {
+            // Distinct marks at frame edges and in each frame's interior expose drift.
+            image.pixels[(x % static_cast<std::size_t>(ROWS)) * source_width + x] = BRIGHT;
+            if (x % 44 == 0 || x % 44 == 43) image.pixels[x] = BRIGHT;
+        }
+        GlyphBitmap following{
+            .pixels = std::vector<uint8_t>(static_cast<std::size_t>(ROWS) * 8, DARK),
+            .width = 8};
+        following.pixels.front() = BRIGHT;
+        following.pixels.back() = BRIGHT;
+        const std::array images{image, following};
+        for (const auto mode : {DisplayMode::animation, DisplayMode::left})
+        {
+            DisplaySettings settings;
+            settings.slots[0].mode = mode;
+            const auto payload = build_payload(images, settings, timestamp);
+            const std::size_t frame_width = mode == DisplayMode::animation ? 44 : source_width;
+            const auto frames = (source_width + frame_width - 1) / frame_width;
+            const auto frame_groups = (frame_width + 7) / 8;
+            const auto groups = frames * frame_groups;
+            require(((static_cast<std::size_t>(payload[16]) << 8U) | payload[17]) == groups,
+                    "message length must include padding within every animation frame");
+            require(payload[18] == 0 && payload[19] == 1,
+                    "following message length must remain independent of animation framing");
+            for (std::size_t frame = 0; frame < frames; ++frame)
+            {
+                for (std::size_t row = 0; row < static_cast<std::size_t>(ROWS); ++row)
+                {
+                    for (std::size_t x = 0; x < frame_groups * 8; ++x)
+                    {
+                        const auto offset = REPORT_SIZE +
+                            ((frame * frame_groups + x / 8) * static_cast<std::size_t>(ROWS)) + row;
+                        const bool lit = (payload[offset] & (0x80U >> (x % 8))) != 0;
+                        const auto source_x = frame * frame_width + x;
+                        const bool expected = x < frame_width && source_x < source_width &&
+                            image.pixels[row * source_width + source_x] == BRIGHT;
+                        require(lit == expected,
+                                "frame pixels must retain their positions with dark padding");
+                    }
+                }
+            }
+            const auto next_offset = REPORT_SIZE + groups * static_cast<std::size_t>(ROWS);
+            for (std::size_t row = 0; row < static_cast<std::size_t>(ROWS); ++row)
+            {
+                const uint8_t expected = row == 0 ? 0x80 : (row == ROWS - 1 ? 0x01 : 0);
+                require(payload[next_offset + row] == expected,
+                        "animation padding must not consume pixels from the following slot");
+            }
+        }
+    }
+}
+
+auto test_animation_capacity() -> void
+{
+    DisplaySettings settings;
+    settings.slots[0].mode = DisplayMode::animation;
+    const ProtocolTimestamp timestamp{
+        .year = 2026, .month = 7, .day = 17, .hour = 19, .minute = 0, .second = 1};
+    // 123 frames occupy 738 groups; header plus report padding fills exactly 8192 bytes.
+    GlyphBitmap image{
+        .pixels = std::vector<uint8_t>(static_cast<std::size_t>(44U) * 123U * static_cast<std::size_t>(ROWS), DARK),
+        .width = 44 * 123};
+    const std::array images{image};
+    const auto payload = build_payload(images, settings, timestamp);
+    require(payload.size() == MAX_PAYLOAD && payload[16] == 0x02 && payload[17] == 0xE2,
+            "largest fitting animation must account for each frame's padding");
+    image.width += 44;
+    image.pixels.resize(static_cast<std::size_t>(image.width) * static_cast<std::size_t>(ROWS));
+    require_throws<std::invalid_argument>(
+        [&]() -> void { build_payload(std::array{image}, settings, timestamp); },
+        "animation exceeding capacity after frame padding must be rejected");
+}
+
 auto test_utf8_validation() -> void
 {
     const auto codepoints = utf8_codepoints("A洛🙂");
@@ -141,6 +229,8 @@ auto main() -> int
         test_pack_image();
         test_header_and_payload();
         test_mode_encoding();
+        test_animation_frame_alignment();
+        test_animation_capacity();
         test_utf8_validation();
         test_vendor_font();
         std::cout << "all tests passed\n";

@@ -130,10 +130,14 @@ auto build_payload(std::span<const GlyphBitmap> images, const DisplaySettings &s
     std::vector<uint16_t> lengths;
     packed_images.reserve(images.size());
     lengths.reserve(images.size());
-    for (const auto &image : images)
+    for (std::size_t index = 0; index < images.size(); ++index)
     {
+        const auto &image = images[index];
         image.validate();
-        auto packed = pack_image(image.pixels, image.width);
+        const int frame_width = settings.slots[index].mode == DisplayMode::animation
+                                    ? DISPLAY_WIDTH
+                                    : image.width;
+        auto packed = pack_image(image.pixels, image.width, frame_width);
         const std::size_t columns = packed.size() / static_cast<std::size_t>(ROWS);
         if (columns == 0 || columns > std::numeric_limits<uint16_t>::max())
         {
