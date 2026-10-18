@@ -317,8 +317,9 @@ void MainWindow::syncDocumentControls()
     const QSignalBlocker a(font_choice_), b(font_file_), c(vendor_directory_),
         d(font_size_), e(threshold_), f(brightness_);
     font_choice_->setCurrentIndex(font_choice_->findData(static_cast<int>(doc.font_choice)));
-    font_file_->setText(doc.font_file);
-    vendor_directory_->setText(doc.vendor_font_directory);
+    if (font_file_->text() != doc.font_file) font_file_->setText(doc.font_file);
+    if (vendor_directory_->text() != doc.vendor_font_directory)
+        vendor_directory_->setText(doc.vendor_font_directory);
     font_size_->setValue(doc.font_size);
     threshold_->setValue(doc.threshold);
     brightness_->setCurrentIndex(brightness_->findData(doc.brightness));
@@ -339,7 +340,8 @@ void MainWindow::syncMessageControls()
     const QSignalBlocker a(text_), b(mode_), c(speed_), d(blink_), e(border_);
     if (!valid) { text_->clear(); return; }
     const auto &entry = model_->document().messages[row];
-    text_->setText(entry.text);
+    // Echoing setText back into a live editor resets its caret, undo and IME composition.
+    if (text_->text() != entry.text) text_->setText(entry.text);
     mode_->setCurrentIndex(mode_->findData(static_cast<int>(entry.settings.mode)));
     speed_->setValue(entry.settings.speed);
     blink_->setChecked(entry.settings.blink);

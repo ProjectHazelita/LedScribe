@@ -5,10 +5,12 @@
 #include <QFile>
 #include <QFileDialog>
 #include <QDir>
+#include <QInputMethodEvent>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QListView>
+#include <QLineEdit>
 #include <QMessageBox>
 #include <QPushButton>
 #include <QSignalSpy>
@@ -358,6 +360,67 @@ class GuiTests : public QObject
         result = qvariant_cast<RenderResultPtr>(spy.takeFirst()[0]);
         QVERIFY(!result->layout);
         QVERIFY(!result->global_error.isEmpty() || !result->errors[0].isEmpty());
+    }
+
+    void editingInTheMiddlePreservesCaretSelectionAndUndo()
+    {
+        MainWindow window;
+        MessageEntry message;
+        message.text = "abcdef";
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        QLineEdit *editor = nullptr;
+        for (auto *line : window.findChildren<QLineEdit *>())
+            if (line->text() == message.text) editor = line;
+        QVERIFY(editor);
+        editor->setCursorPosition(3);
+        QTest::keyClick(editor, Qt::Key_Backspace);
+        QCOMPARE(editor->text(), QString("abdef"));
+        QCOMPARE(editor->cursorPosition(), 2);
+        QTest::keyClicks(editor, "X");
+        QCOMPARE(editor->text(), QString("abXdef"));
+        QCOMPARE(editor->cursorPosition(), 3);
+        editor->setSelection(1, 3);
+        QTest::keyClicks(editor, "Y");
+        QCOMPARE(editor->text(), QString("aYef"));
+        QCOMPARE(editor->cursorPosition(), 2);
+        QCOMPARE(window.projectModel()->document().messages[0].text, editor->text());
+        editor->undo();
+        QCOMPARE(editor->text(), QString("abXdef"));
+        QCOMPARE(window.projectModel()->document().messages[0].text, editor->text());
+        message.text = "external update";
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        QCOMPARE(editor->text(), message.text);
+    }
+
+    void chineseCompositionCommitsAtTheInsertionPoint()
+    {
+        MainWindow window;
+        MessageEntry message;
+        message.text = QStringLiteral("左右");
+        QVERIFY(window.projectModel()->setMessage(0, message));
+        QLineEdit *editor = nullptr;
+        for (auto *line : window.findChildren<QLineEdit *>())
+            if (line->text() == message.text) editor = line;
+        QVERIFY(editor);
+        editor->setCursorPosition(1);
+        const auto before = window.revision();
+        QInputMethodEvent preedit(QStringLiteral("ni"),
+            {{QInputMethodEvent::Cursor, 2, 1, {}}});
+        QApplication::sendEvent(editor, &preedit);
+        QCOMPARE(editor->text(), message.text);
+        QCOMPARE(window.revision(), before); // preedit is not committed project text
+        QInputMethodEvent first(QStringLiteral("hao"),
+            {{QInputMethodEvent::Cursor, 3, 1, {}}});
+        first.setCommitString(QStringLiteral("你"));
+        QApplication::sendEvent(editor, &first);
+        QCOMPARE(editor->text(), QStringLiteral("左你右"));
+        QCOMPARE(editor->cursorPosition(), 2);
+        QInputMethodEvent second;
+        second.setCommitString(QStringLiteral("好"));
+        QApplication::sendEvent(editor, &second);
+        QCOMPARE(editor->text(), QStringLiteral("左你好右"));
+        QCOMPARE(editor->cursorPosition(), 3);
+        QCOMPARE(window.projectModel()->document().messages[0].text, editor->text());
     }
 
     void staleSnapshotsAndSelectionDoNotMutateDocument()
