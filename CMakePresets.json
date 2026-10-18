@@ -25,7 +25,27 @@
       "cacheVariables": {
         "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-omit-frame-pointer",
         "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined",
-        "LEDYROCHEN_WARNINGS_AS_ERRORS": "ON"
+        "LEDSCRIBE_WARNINGS_AS_ERRORS": "ON"
+      }
+    },
+    {
+      "name": "gui",
+      "displayName": "Qt Widgets editor",
+      "inherits": "dev",
+      "binaryDir": "${sourceDir}/build/gui",
+      "cacheVariables": {
+        "LEDSCRIBE_BUILD_GUI": "ON",
+        "BUILD_TESTING": "ON"
+      }
+    },
+    {
+      "name": "gui-sanitizers",
+      "displayName": "Qt Widgets editor with sanitizers",
+      "inherits": "sanitizers",
+      "binaryDir": "${sourceDir}/build/gui-sanitizers",
+      "cacheVariables": {
+        "LEDSCRIBE_BUILD_GUI": "ON",
+        "BUILD_TESTING": "ON"
       }
     }
   ],
@@ -37,6 +57,14 @@
     {
       "name": "sanitizers",
       "configurePreset": "sanitizers"
+    },
+    {
+      "name": "gui",
+      "configurePreset": "gui"
+    },
+    {
+      "name": "gui-sanitizers",
+      "configurePreset": "gui-sanitizers"
     }
   ],
   "testPresets": [
@@ -58,6 +86,16 @@
       "output": {
         "outputOnFailure": true
       }
+    },
+    {
+      "name": "gui",
+      "configurePreset": "gui",
+      "output": { "outputOnFailure": true }
+    },
+    {
+      "name": "gui-sanitizers",
+      "inherits": "sanitizers",
+      "configurePreset": "gui-sanitizers"
     }
   ]
 }

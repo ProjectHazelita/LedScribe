@@ -1,10 +1,12 @@
 #pragma once
 
 #include <array>
+#include <chrono>
 #include <cstdint>
 
 // ── display / protocol ──
 constexpr int ROWS = 11;            // display height in pixels
+constexpr int DISPLAY_WIDTH = 44;   // visible width of one animation frame
 constexpr int MAX_PAYLOAD = 8192;   // CH546 safe limit (bytes)
 constexpr int REPORT_SIZE = 64;     // HID report size (bytes)
 constexpr int COLUMN_WIDTH = 8;     // bits per packed column group
@@ -57,4 +59,5 @@ constexpr unsigned char TRAIL_BITS = 0x3F; // 10xxxxxx → extract 6 data bits
 // ── USB ──
 constexpr uint16_t VID = 0x0416;
 constexpr uint16_t PID = 0x5020;
+constexpr std::chrono::milliseconds WRITE_DELAY = std::chrono::milliseconds{100};
 constexpr unsigned int TRANSFER_TIMEOUT = 3000;
