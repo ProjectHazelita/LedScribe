@@ -21,6 +21,11 @@
         let
           pkgs = import nixpkgs { inherit system; };
           llvm = pkgs.llvmPackages;
+          qt = pkgs.qt6;
+          qtModules = [
+            qt.qtbase
+            qt.qtwayland
+          ];
         in
         {
           default = pkgs.mkShell {
@@ -39,6 +44,10 @@
               pkgs.libusb1
               pkgs.pkg-config
             ];
+            nativeBuildInputs = [ qt.wrapQtAppsHook ];
+            buildInputs = qtModules;
+            # Locally built binaries are not wrapped by Nix's package fixup phase.
+            QT_PLUGIN_PATH = pkgs.lib.makeSearchPath qt.qtbase.qtPluginPrefix qtModules;
           };
         }
       );

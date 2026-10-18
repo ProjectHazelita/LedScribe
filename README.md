@@ -152,6 +152,26 @@ sudo udevadm control --reload-rules
 
 ## 💻 开发与测试
 
+### Qt Widgets 开发环境
+
+Nix 开发环境已包含 Qt 6 Widgets 的开发文件与工具，以及 Wayland / X11 平台插件。它们为后续 GUI 开发准备，**当前项目仍只有 CLI 入口**，核心库没有引入 Qt 依赖。
+
+修改环境后重新进入开发 shell，即可检查 Qt 是否来自该环境：
+
+```bash
+nix develop
+pkg-config --modversion Qt6Core Qt6Gui Qt6Widgets
+qmake -query QT_VERSION
+```
+
+使用仓库 `.envrc` 自动加载环境时，可执行 `direnv reload`，让交互式 shell 重新加载依赖。已经运行的进程不会自动继承新的环境变量。
+
+开发 shell 设置了 Nix Qt 模块对应的 `QT_PLUGIN_PATH`，让本地编译、尚未经过 Nix 打包包装的程序也能找到平台插件；不要将它替换为系统 Qt 的插件目录。没有全局强制显示后端，调试时可用 `QT_QPA_PLATFORM=wayland` 或 `QT_QPA_PLATFORM=xcb` 显式选择。
+
+该环境已验证 Widgets 编译、自动 MOC、离屏与 X11 启动，以及 Wayland 窗口实际显示；未加入正式 GUI 目标或额外 IDE。
+
+### 离线回归
+
 常规离线回归：
 
 ```bash
