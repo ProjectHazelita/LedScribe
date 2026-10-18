@@ -3,7 +3,9 @@
 #include <cstdint>
 #include <functional>
 #include <iostream>
+#include <span>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <vector>
 
@@ -90,6 +92,8 @@ auto test_mode_encoding() -> void
         DisplayMode::left, DisplayMode::right, DisplayMode::up,
         DisplayMode::down, DisplayMode::still, DisplayMode::animation,
         DisplayMode::drop, DisplayMode::curtain, DisplayMode::laser};
+    constexpr std::array<std::string_view, 9> names{
+        "left", "right", "up", "down", "still", "animation", "drop", "curtain", "laser"};
     const std::array<uint16_t, 1> lengths{1};
     const ProtocolTimestamp timestamp{
         .year = 2026, .month = 7, .day = 17, .hour = 19, .minute = 0, .second = 1};
@@ -100,7 +104,27 @@ auto test_mode_encoding() -> void
         settings.slots[0].mode = modes[code];
         const auto header = build_header(lengths, settings, timestamp);
         require(header[8] == 0x70 + code, "named mode serialized with incorrect protocol code");
+        require(display_mode_name(modes[code]) == names[code],
+                "canonical mode name must match protocol declaration order");
+        require(parse_display_mode(names[code]) == modes[code],
+                "canonical mode name must parse back to its protocol code");
+        const auto numeric = std::to_string(code);
+        require(parse_display_mode(numeric) == modes[code],
+                "numeric mode must parse to its protocol code");
     }
+    require_throws<std::invalid_argument>([]() -> void { parse_display_mode("9"); },
+                                          "numeric mode above 8 must be rejected");
+    require_throws<std::invalid_argument>([]() -> void { parse_display_mode("-1"); },
+                                          "negative numeric mode must be rejected");
+    require_throws<std::invalid_argument>([]() -> void { parse_display_mode("Animation"); },
+                                          "mode names are case-sensitive");
+    require_throws<std::invalid_argument>([]() -> void { parse_display_mode(""); },
+                                          "empty mode must be rejected");
+    require_throws<std::invalid_argument>([]() -> void { parse_display_mode("left "); },
+                                          "mode with trailing text must be rejected");
+    require_throws<std::invalid_argument>(
+        []() -> void { static_cast<void>(display_mode_name(static_cast<DisplayMode>(9))); },
+        "out-of-range display mode must not get a canonical name");
 }
 
 auto test_animation_frame_alignment() -> void
@@ -177,14 +201,118 @@ auto test_animation_capacity() -> void
         .pixels = std::vector<uint8_t>(static_cast<std::size_t>(44U) * 123U * static_cast<std::size_t>(ROWS), DARK),
         .width = 44 * 123};
     const std::array images{image};
+    const auto layout = measure_payload(images, settings);
+    require(layout.slot_count == 1 && layout.slots[0].frames == 123 &&
+                layout.slots[0].groups == 738 &&
+                layout.slots[0].bytes == static_cast<std::size_t>(738 * ROWS),
+            "123 animation frames must report per-frame padding in the measurement");
+    require(layout.raw_bytes == static_cast<std::size_t>(REPORT_SIZE + (738 * ROWS)),
+            "raw payload measurement must include the 64-byte header");
+    require(layout.payload_bytes == MAX_PAYLOAD && layout.fits,
+            "123 animation frames must measure as the largest fitting animation");
     const auto payload = build_payload(images, settings, timestamp);
-    require(payload.size() == MAX_PAYLOAD && payload[16] == 0x02 && payload[17] == 0xE2,
-            "largest fitting animation must account for each frame's padding");
+    require(payload.size() == layout.payload_bytes && payload[16] == 0x02 && payload[17] == 0xE2,
+            "largest fitting animation must match its measurement and frame padding");
     image.width += 44;
     image.pixels.resize(static_cast<std::size_t>(image.width) * static_cast<std::size_t>(ROWS));
+    const auto oversized = measure_payload(std::array{image}, settings);
+    require(oversized.slots[0].frames == 124 && oversized.slots[0].groups == 744 &&
+                oversized.slots[0].bytes == static_cast<std::size_t>(744 * ROWS),
+            "124 animation frames must report their real padded size");
+    require(!oversized.fits && oversized.payload_bytes == 8256,
+            "124 animation frames must measure as 8256 bytes and over capacity");
+    bool rejected = false;
+    try
+    {
+        static_cast<void>(build_payload(std::array{image}, settings, timestamp));
+    }
+    catch (const std::invalid_argument &error)
+    {
+        rejected = true;
+        require(std::string_view(error.what()).find("8256") != std::string_view::npos,
+                "over-capacity error must report the measured byte count");
+    }
+    require(rejected, "animation exceeding capacity after frame padding must be rejected");
+
+    // The same 5456-column bitmap is affordable as a continuous strip.
+    settings.slots[0].mode = DisplayMode::left;
+    const auto continuous = measure_payload(std::array{image}, settings);
+    require(continuous.slots[0].frames == 1 && continuous.slots[0].groups == 682 &&
+                continuous.slots[0].bytes == static_cast<std::size_t>(682 * ROWS),
+            "left mode must re-measure the full strip without animation framing");
+    require(continuous.payload_bytes == 7616 && continuous.fits,
+            "5456 continuous columns must measure within capacity");
+    require(build_payload(std::array{image}, settings, timestamp).size() ==
+                continuous.payload_bytes,
+            "continuous payload size must match its re-measurement");
+}
+
+auto test_payload_measurement() -> void
+{
+    DisplaySettings settings;
+    settings.slots[0].mode = DisplayMode::animation;
+    settings.slots[1].mode = DisplayMode::left;
+    const ProtocolTimestamp timestamp{
+        .year = 2026, .month = 7, .day = 17, .hour = 19, .minute = 0, .second = 1};
+
+    GlyphBitmap animated{
+        .pixels = std::vector<uint8_t>(static_cast<std::size_t>(45) * static_cast<std::size_t>(ROWS),
+                                       DARK),
+        .width = 45};
+    GlyphBitmap continuous{
+        .pixels = std::vector<uint8_t>(static_cast<std::size_t>(8) * static_cast<std::size_t>(ROWS),
+                                       DARK),
+        .width = 8};
+    const std::array images{animated, continuous};
+    auto layout = measure_payload(images, settings);
+    require(layout.slot_count == 2, "measurement must count every supplied slot");
+    require(layout.slots[0].frames == 2 && layout.slots[0].groups == 12 &&
+                layout.slots[0].bytes == static_cast<std::size_t>(12 * ROWS),
+            "45-column animation must pad two 44-column frames to six groups each");
+    require(layout.slots[1].frames == 1 && layout.slots[1].groups == 1 &&
+                layout.slots[1].bytes == static_cast<std::size_t>(ROWS),
+            "continuous 8-column bitmap must occupy a single group");
+    require(layout.slots[2].frames == 0 && layout.slots[2].groups == 0 &&
+                layout.slots[2].bytes == 0,
+            "unused slots must remain zeroed in the measurement");
+    require(layout.raw_bytes == static_cast<std::size_t>(REPORT_SIZE + (13 * ROWS)),
+            "multi-slot raw measurement must sum every slot");
+    require(layout.payload_bytes == 256 && layout.fits,
+            "multi-slot measurement must round up to a 64-byte report boundary");
+    require(build_payload(images, settings, timestamp).size() == layout.payload_bytes,
+            "measurement must agree with the encoded multi-slot payload size");
+
+    // A continuous bitmap is re-measured without animation framing when its mode changes.
+    settings.slots[0].mode = DisplayMode::left;
+    layout = measure_payload(images, settings);
+    require(layout.slots[0].frames == 1 && layout.slots[0].groups == 6 &&
+                layout.slots[0].bytes == static_cast<std::size_t>(6 * ROWS),
+            "left mode must measure 45 continuous columns as six groups");
+    require(layout.raw_bytes == static_cast<std::size_t>(REPORT_SIZE + (7 * ROWS)),
+            "mode change must recompute raw payload size");
+    require(layout.payload_bytes == 192 && layout.fits,
+            "continuous 45-column bitmap must round up to 192 bytes");
+    require(build_payload(images, settings, timestamp).size() == layout.payload_bytes,
+            "measurement must agree with the continuous encoded payload size");
+
     require_throws<std::invalid_argument>(
-        [&]() -> void { build_payload(std::array{image}, settings, timestamp); },
-        "animation exceeding capacity after frame padding must be rejected");
+        []() -> void { measure_payload(std::span<const GlyphBitmap>{}, DisplaySettings{}); },
+        "measurement must reject a missing message");
+    const auto valid = GlyphBitmap{
+        .pixels = std::vector<uint8_t>(static_cast<std::size_t>(ROWS), DARK), .width = 1};
+    std::vector<GlyphBitmap> nine(9, valid);
+    require_throws<std::invalid_argument>(
+        [&]() -> void { measure_payload(nine, DisplaySettings{}); },
+        "measurement must reject more than eight messages");
+    const auto malformed = GlyphBitmap{.pixels = {}, .width = 8};
+    require_throws<std::invalid_argument>(
+        [&]() -> void { measure_payload(std::array{malformed}, DisplaySettings{}); },
+        "measurement must validate bitmap dimensions");
+    DisplaySettings bad_speed;
+    bad_speed.slots[0].speed = 0;
+    require_throws<std::invalid_argument>(
+        [&]() -> void { measure_payload(std::array{valid}, bad_speed); },
+        "measurement must validate slot settings");
 }
 
 auto test_utf8_validation() -> void
@@ -231,6 +359,7 @@ auto main() -> int
         test_mode_encoding();
         test_animation_frame_alignment();
         test_animation_capacity();
+        test_payload_measurement();
         test_utf8_validation();
         test_vendor_font();
         std::cout << "all tests passed\n";

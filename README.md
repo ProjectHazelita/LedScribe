@@ -206,7 +206,8 @@ ctest --preset sanitizers
 
 - [`src/main.cpp`](./src/main.cpp)：参数解析与应用流程。
 - [`src/vendor_font.cpp`](./src/vendor_font.cpp)、[`src/truetype.cpp`](./src/truetype.cpp)：两种字体渲染路径。
-- [`src/pack.cpp`](./src/pack.cpp)、[`src/protocol.cpp`](./src/protocol.cpp)：位图打包、协议头与 64 字节对齐。
+- [`src/render.cpp`](./src/render.cpp)：共享字体选择、整条消息回退与字体来源元信息，核心不依赖 Qt。
+- [`src/pack.cpp`](./src/pack.cpp)、[`src/protocol.cpp`](./src/protocol.cpp)：位图打包、模式名称与协议头；`measure_payload` 在分配封包前计算容量，动画每帧44列、存储48列，最终按64字节对齐。合法超容量布局仍可测量，但禁止构建传输数据。
 - [`src/device.cpp`](./src/device.cpp)：libusb 设备生命周期与逐报告 OUT/ACK 交互；当前返回包只校验传输结果与长度，不解析其内容。
 
 ## 🔧 旧名称迁移

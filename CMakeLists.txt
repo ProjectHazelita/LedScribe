@@ -28,6 +28,7 @@ add_library(
   src/device.cpp
   src/vendor_font.cpp
   src/truetype.cpp
+  src/render.cpp
 )
 target_link_libraries(ledscribe_core PUBLIC PkgConfig::LIBUSB)
 target_include_directories(ledscribe_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/src)
@@ -38,6 +39,8 @@ set_target_properties(ledscribe_core PROPERTIES CXX_EXTENSIONS OFF)
 add_executable(ledscribe src/main.cpp)
 target_link_libraries(ledscribe PRIVATE ledscribe_core)
 set_target_properties(ledscribe PROPERTIES CXX_EXTENSIONS OFF)
+
+option(LEDSCRIBE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
 
 function(ledscribe_enable_warnings target)
   target_compile_options(
@@ -67,6 +70,11 @@ function(ledscribe_enable_warnings target)
       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wlogical-op>
       $<$<COMPILE_LANG_AND_ID:CXX,GNU>:-Wstrict-aliasing=3>
   )
+  if(LEDSCRIBE_WARNINGS_AS_ERRORS)
+    target_compile_options(
+      ${target} PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
+    )
+  endif()
 endfunction()
 
 ledscribe_enable_warnings(ledscribe_core)
@@ -84,6 +92,11 @@ if(BUILD_TESTING)
   set_target_properties(ledscribe_font_tests PROPERTIES CXX_EXTENSIONS OFF)
   ledscribe_enable_warnings(ledscribe_font_tests)
   add_test(NAME ledscribe_font_tests COMMAND ledscribe_font_tests)
+  add_executable(ledscribe_render_tests tests/render_tests.cpp)
+  target_link_libraries(ledscribe_render_tests PRIVATE ledscribe_core)
+  set_target_properties(ledscribe_render_tests PROPERTIES CXX_EXTENSIONS OFF)
+  ledscribe_enable_warnings(ledscribe_render_tests)
+  add_test(NAME ledscribe_render_tests COMMAND ledscribe_render_tests)
   add_test(
     NAME ledscribe_cli_tests
     COMMAND
@@ -93,23 +106,6 @@ if(BUILD_TESTING)
   )
 endif()
 
-option(LEDSCRIBE_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" OFF)
-if(LEDSCRIBE_WARNINGS_AS_ERRORS)
-  target_compile_options(
-    ledscribe_core PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
-  )
-  target_compile_options(
-    ledscribe PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
-  )
-  if(BUILD_TESTING)
-    target_compile_options(
-      ledscribe_tests PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
-    )
-    target_compile_options(
-      ledscribe_font_tests PRIVATE $<$<COMPILE_LANG_AND_ID:CXX,Clang,GNU>:-Werror>
-    )
-  endif()
-endif()
 
 include(GNUInstallDirs)
 install(TARGETS ledscribe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})

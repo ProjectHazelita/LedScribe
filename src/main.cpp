@@ -13,8 +13,7 @@
 #include "constants.hpp"
 #include "device.hpp"
 #include "protocol.hpp"
-#include "truetype.hpp"
-#include "vendor_font.hpp"
+#include "render.hpp"
 
 namespace
 {
@@ -74,43 +73,6 @@ auto parse_integer(std::string_view text, std::string_view name) -> int
         throw std::invalid_argument(std::string(name) + " must be an integer");
     }
     return value;
-}
-
-auto parse_mode(std::string_view value) -> DisplayMode
-{
-    struct NamedMode
-    {
-        std::string_view name;
-        DisplayMode mode;
-    };
-    constexpr std::array<NamedMode, 9> modes = {
-        NamedMode{.name = "left", .mode = DisplayMode::left},
-        NamedMode{.name = "right", .mode = DisplayMode::right},
-        NamedMode{.name = "up", .mode = DisplayMode::up},
-        NamedMode{.name = "down", .mode = DisplayMode::down},
-        NamedMode{.name = "still", .mode = DisplayMode::still},
-        NamedMode{.name = "animation", .mode = DisplayMode::animation},
-        NamedMode{.name = "drop", .mode = DisplayMode::drop},
-        NamedMode{.name = "curtain", .mode = DisplayMode::curtain},
-        NamedMode{.name = "laser", .mode = DisplayMode::laser},
-    };
-    for (const auto &named : modes)
-    {
-        if (value == named.name)
-        {
-            return named.mode;
-        }
-    }
-    int numeric = 0;
-    const auto [end, error] =
-        std::from_chars(value.data(), value.data() + value.size(), numeric);
-    if (error != std::errc{} || end != value.data() + value.size() || numeric < 0 ||
-        numeric > 8)
-    {
-        throw std::invalid_argument(
-            "mode must be left, right, up, down, still, animation, drop, curtain, laser or 0..8");
-    }
-    return static_cast<DisplayMode>(numeric);
 }
 
 auto split_values(std::string_view text, std::string_view name) -> std::vector<std::string_view>
@@ -281,13 +243,13 @@ auto parse_options(int argc, char **argv) -> Options
             auto parts = split_values(optarg, "mode");
             if (parts.size() == 1)
             {
-                DisplayMode m = parse_mode(parts[0]);
+                DisplayMode m = parse_display_mode(parts[0]);
                 for (auto &slot : result.display.slots) slot.mode = m;
             }
             else
             {
                 for (std::size_t i = 0; i < parts.size(); ++i)
-                    result.display.slots[i].mode = parse_mode(parts[i]);
+                    result.display.slots[i].mode = parse_display_mode(parts[i]);
             }
             break;
         }
@@ -378,45 +340,18 @@ auto run(const Options &options) -> int
         throw std::invalid_argument("provide 1..8 messages, or use --list-devices");
     }
 
-    std::optional<VendorFont> vendor_font;
-    if (options.font.empty() && !options.no_vendor_font)
-    {
-        const auto directory = find_vendor_font_dir(options.vendor_font_dir);
-        if (!directory.empty())
-        {
-            vendor_font = load_vendor_font(directory);
-            std::cout << "using vendor bitmap font: " << directory << '\n';
-        }
-        else
-        {
-            std::cout << "vendor/ASC11 and vendor/HZK11 not found; using outline font\n";
-        }
-    }
-
-    std::optional<std::filesystem::path> outline_font;
+    TextRenderer renderer(
+        RenderOptions{.font = options.font,
+                      .vendor_font_dir = options.vendor_font_dir,
+                      .no_vendor_font = options.no_vendor_font,
+                      .font_size = options.font_size,
+                      .threshold = options.threshold},
+        &std::cout);
     std::vector<GlyphBitmap> images;
     images.reserve(options.messages.size());
     for (const auto &message : options.messages)
     {
-        if (vendor_font)
-        {
-            try
-            {
-                images.push_back(render_vendor(message, *vendor_font));
-                continue;
-            }
-            catch (const UnsupportedVendorGlyph &error)
-            {
-                std::cout << error.what() << "; falling back to outline font for this message\n";
-            }
-        }
-        if (!outline_font)
-        {
-            outline_font = find_font(options.font);
-            std::cout << "using outline font: " << *outline_font << '\n';
-        }
-        images.push_back(
-            render_text(message, outline_font->string(), options.font_size, options.threshold));
+        images.push_back(renderer.render(message).image);
     }
 
     if (options.show_preview)
